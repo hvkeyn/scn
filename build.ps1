@@ -523,20 +523,37 @@ function Build-Simple {
         Write-Info "Creating release package..."
         $releaseDir = Join-Path (Get-Location).Path "..\scn-release"
         if (Test-Path $releaseDir) {
-            Remove-Item $releaseDir -Recurse -Force -ErrorAction SilentlyContinue
+            # Try to remove, but don't fail if files are locked
+            try {
+                Remove-Item $releaseDir -Recurse -Force -ErrorAction Stop
+            } catch {
+                # If removal fails, try to remove individual files
+                Write-Warning "Could not remove release directory, cleaning files individually..."
+                Get-ChildItem -Path $releaseDir -Recurse -File | Remove-Item -Force -ErrorAction SilentlyContinue
+                Get-ChildItem -Path $releaseDir -Recurse -Directory | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
         }
-        New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+        if (-not (Test-Path $releaseDir)) {
+            New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+        }
         
-        # Copy all files from Release
+        # Copy all files from Release (this includes flutter_windows.dll)
         Copy-Item -Path "$buildPath\*" -Destination $releaseDir -Recurse -Force
         
-        # Copy logo assets from original project if they exist
+        # flutter_windows.dll should already be in the root from Copy-Item above
+        # No need to copy it again
+        
+        # Copy logo assets from original project if they exist (optional)
         $originalAssets = Join-Path (Get-Location).Path "..\app\assets\img"
         if (Test-Path $originalAssets) {
-            $targetAssets = Join-Path $releaseDir "data\flutter_assets\assets\img"
-            New-Item -ItemType Directory -Path $targetAssets -Force | Out-Null
-            Copy-Item -Path "$originalAssets\logo*" -Destination $targetAssets -Force -ErrorAction SilentlyContinue
-            Write-Info "Copied logo assets"
+            try {
+                $targetAssets = Join-Path $releaseDir "data\flutter_assets\assets\img"
+                New-Item -ItemType Directory -Path $targetAssets -Force | Out-Null
+                Copy-Item -Path "$originalAssets\logo*" -Destination $targetAssets -Force -ErrorAction SilentlyContinue
+                Write-Info "Copied logo assets"
+            } catch {
+                # Ignore errors when copying optional assets
+            }
         }
         
         # Create README
@@ -2025,11 +2042,11 @@ catch {
     # Show build output locations even if build failed
     Write-Host ""
     Write-Info "Checking for partially built files..."
-    if ($buildWindows) {
-        Push-Location "app"
+    if ($buildWindows -and $Project -eq 'scn') {
+        Push-Location "scn"
         try {
             $buildPath = "build\windows\x64\runner\Release"
-            $exeFile = Join-Path $buildPath "localsend_app.exe"
+            $exeFile = Join-Path $buildPath "scn.exe"
             if (Test-Path $exeFile) {
                 $exeFullPath = (Resolve-Path $exeFile).Path
                 Write-Warning "Partially built executable found at: $exeFullPath"

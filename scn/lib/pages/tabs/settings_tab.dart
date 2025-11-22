@@ -111,11 +111,16 @@ class SettingsTab extends StatelessWidget {
             child: const Text('Cancel'),
           ),
           TextButton(
-            onPressed: () {
+            onPressed: () async {
               final newName = controller.text.trim();
               if (newName.isNotEmpty) {
-                appService.setDeviceAlias(newName);
-                Navigator.of(context).pop();
+                await appService.setDeviceAlias(newName);
+                if (context.mounted) {
+                  Navigator.of(context).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Device name saved')),
+                  );
+                }
               }
             },
             child: const Text('Save'),

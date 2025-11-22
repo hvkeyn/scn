@@ -1,9 +1,11 @@
 import 'package:flutter/foundation.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:scn/services/http_server_service.dart';
 import 'package:scn/services/discovery_service.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/device_provider.dart';
+import 'package:scn/utils/device_name_generator.dart';
 
 /// Main application service that coordinates all services
 class AppService extends ChangeNotifier {
@@ -13,6 +15,7 @@ class AppService extends ChangeNotifier {
   bool _initialized = false;
   bool _running = false;
   String _deviceAlias = 'SCN Device';
+  static const String _deviceAliasKey = 'device_alias';
   
   bool get initialized => _initialized;
   bool get running => _running;
@@ -41,8 +44,47 @@ class AppService extends ChangeNotifier {
     _httpServer.setDeviceInfo(alias: _deviceAlias);
   }
   
-  void setDeviceAlias(String alias) {
-    _deviceAlias = alias;
+  /// Load device alias from SharedPreferences or generate a new one
+  Future<void> loadDeviceAlias() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final savedAlias = prefs.getString(_deviceAliasKey);
+      
+      if (savedAlias != null && savedAlias.isNotEmpty) {
+        _deviceAlias = savedAlias;
+      } else {
+        // Generate a new random name if none exists
+        _deviceAlias = DeviceNameGenerator.generateUnique();
+        await prefs.setString(_deviceAliasKey, _deviceAlias);
+        debugPrint('Generated new device name: $_deviceAlias');
+      }
+      
+      _updateDeviceInfo();
+      notifyListeners();
+    } catch (e) {
+      debugPrint('Error loading device alias: $e');
+      // Fallback to generated name
+      _deviceAlias = DeviceNameGenerator.generateUnique();
+      _updateDeviceInfo();
+      notifyListeners();
+    }
+  }
+  
+  /// Set device alias and save to SharedPreferences
+  Future<void> setDeviceAlias(String alias) async {
+    if (alias.trim().isEmpty) {
+      return;
+    }
+    
+    _deviceAlias = alias.trim();
+    
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_deviceAliasKey, _deviceAlias);
+    } catch (e) {
+      debugPrint('Error saving device alias: $e');
+    }
+    
     _updateDeviceInfo();
     notifyListeners();
   }

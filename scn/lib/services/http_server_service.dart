@@ -350,18 +350,35 @@ class HttpServerService {
       _port = port;
     }
     
-    try {
-      _server = await shelf_io.serve(
-        _router,
-        InternetAddress.anyIPv4,
-        _port,
-      );
-      
-      print('HTTP Server started on port $_port');
-    } catch (e) {
-      print('Failed to start HTTP server: $e');
-      rethrow;
+    // Try multiple ports if the default one is busy
+    final portsToTry = [_port, _port + 1, _port + 2, _port + 3, _port + 4];
+    Exception? lastException;
+    
+    for (final tryPort in portsToTry) {
+      try {
+        _server = await shelf_io.serve(
+          _router,
+          InternetAddress.anyIPv4,
+          tryPort,
+        );
+        
+        _port = tryPort;
+        print('HTTP Server started on port $_port');
+        return;
+      } on SocketException catch (e) {
+        // Port is busy, try next one
+        lastException = e;
+        print('Port $tryPort is busy, trying next port...');
+        continue;
+      } catch (e) {
+        // Other error, rethrow
+        print('Failed to start HTTP server: $e');
+        rethrow;
+      }
     }
+    
+    // All ports failed
+    throw lastException ?? StateError('Failed to start server on any port');
   }
   
   Future<void> stop() async {
