@@ -1,0 +1,167 @@
+# LocalSend Project Intelligence
+
+## Проект
+LocalSend - кроссплатформенное приложение для обмена файлами по локальной сети. Гибридная архитектура: Flutter (UI) + Rust (core логика).
+
+## Ключевые паттерны
+
+### State Management
+- Используется **Refena** для state management
+- Паттерн: ReduxNotifier с actions
+- Пример:
+  ```dart
+  final provider = ReduxNotifier<State, Action>(...);
+  ref.watch(provider);
+  ref.redux(provider).dispatch(Action());
+  ```
+
+### Архитектура страниц
+- **Pages** - основные экраны
+- **Controllers** - логика управления состоянием (homePageControllerProvider)
+- **ViewModels** - преобразование данных для отображения (VM suffix)
+- **Tabs** - вкладки внутри главной страницы (receive_tab, send_tab, settings_tab)
+
+### Flutter ↔ Rust интеграция
+- Используется **flutter_rust_bridge** 2.11.1
+- Rust код в `app/rust/` и `core/`
+- Генерированные биндинги в `app/lib/rust/frb_generated.dart`
+- Всегда запускать `flutter pub run build_runner build -d` после изменений Rust кода
+
+### Структура кода
+- `app/lib/pages/` - экраны приложения
+- `app/lib/provider/` - state providers (Refena)
+- `app/lib/widget/` - переиспользуемые виджеты
+- `app/lib/util/` - утилиты
+- `app/lib/model/` - модели данных
+- `common/lib/` - общий код для app и cli
+- `core/src/` - Rust core библиотека
+- `server/src/` - отдельный Rust сервер
+
+### Работа с файлами
+- Используется **CrossFile** для кроссплатформенной работы с файлами
+- Конвертеры в `app/lib/util/native/cross_file_converters.dart`
+- Streaming передача для больших файлов
+
+### Интернационализация
+- Используется **slang** 4.9.0
+- Файлы переводов в `app/assets/i18n/`
+- Генерация: `flutter pub run slang`
+- Использование: `t.keyName` (генерируется из strings.g.dart)
+
+### Навигация
+- Используется **routerino** 0.8.0
+- `Routerino.navigatorKey` для навигации
+- `RouterinoHome` для главной страницы
+
+### Сетевое взаимодействие
+- Discovery через multicast DNS
+- HTTP сервер на Rust (core/src/http/)
+- HTTP клиент через rhttp
+- WebRTC опционально
+
+### Безопасность
+- TLS/SSL с самоподписанными сертификатами
+- Token-based аутентификация
+- Проверка сертификатов получателя
+
+### Платформо-специфичный код
+- `app/lib/util/native/` - нативные утилиты
+- Условная компиляция через `Platform.isXXX`
+- Platform channels для нативных функций
+
+## Важные зависимости
+
+### Flutter
+- `refena_flutter` 3.1.0 - state management
+- `routerino` 0.8.0 - навигация
+- `slang` 4.9.0 - i18n
+- `dart_mappable` 4.6.0 - сериализация
+- `flutter_rust_bridge` 2.11.1 - Rust интеграция
+
+### Rust
+- `tokio` - асинхронный runtime
+- `hyper` - HTTP библиотека
+- `rustls` - TLS
+- `serde` - сериализация
+
+## Сборка и запуск
+
+### Перед запуском
+```bash
+cd app
+flutter pub get
+flutter pub run build_runner build -d
+```
+
+### Запуск
+```bash
+cd app
+flutter run
+```
+
+### Использование fvm
+Проект использует fvm для управления версией Flutter. Используйте `fvm flutter` вместо `flutter`.
+
+## Стиль кода
+
+### Dart
+- Следуйте Dart Style Guide
+- Используйте flutter_lints правила
+- Анализ кода через analysis_options.yaml
+
+### Rust
+- Следуйте Rust style guide (rustfmt)
+- Используйте Result<T, E> для обработки ошибок
+- Документируйте публичные API
+
+## Особенности проекта
+
+### FOSS версия
+- Некоторые функции помечены `[FOSS_REMOVE]`
+- In-app purchases удаляются в FOSS версии
+- Проверять наличие этих маркеров при изменении кода
+
+### Git зависимости
+- `device_apps` - форк для Android поддержки
+- `pasteboard` - временный форк
+- `permission_handler_windows` - noop версия
+
+### Версионирование
+- Формат: MAJOR.MINOR.PATCH+BUILD
+- Текущая версия: 1.17.0+58
+
+## Известные проблемы
+
+1. Android скорость передачи - проблема с saf_stream
+2. AP isolation на роутерах блокирует обнаружение
+3. Windows требует настройку сети как "частная"
+
+## Тестирование
+
+- Unit тесты в `app/test/`
+- Тесты common в `common/test/`
+- Используется mockito для моков
+
+## Распространение
+
+- Поддержка множества каналов (App Store, Play Store, package managers)
+- Скрипты сборки в `scripts/`
+- Portable mode для Windows
+
+## Важные файлы
+
+- `app/lib/main.dart` - точка входа
+- `app/lib/config/init.dart` - инициализация приложения
+- `app/lib/pages/home_page.dart` - главная страница
+- `core/src/lib.rs` - Rust core библиотека
+- `common/lib/constants.dart` - общие константы
+
+## При работе с проектом
+
+1. Всегда читать memory-bank файлы перед началом работы
+2. Проверять платформо-специфичный код при изменениях
+3. Запускать build_runner после изменений моделей/i18n
+4. Тестировать на целевых платформах
+5. Проверять FOSS маркеры при изменении кода
+6. Обновлять CHANGELOG при значительных изменениях
+
