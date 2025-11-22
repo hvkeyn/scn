@@ -6,6 +6,8 @@ import 'package:scn/services/app_service.dart';
 import 'package:scn/services/http_client_service.dart';
 import 'package:scn/models/session.dart';
 import 'package:scn/models/file_info.dart';
+import 'package:scn/models/device_visibility.dart';
+import 'package:scn/widgets/scn_logo.dart';
 
 class ReceiveTab extends StatefulWidget {
   const ReceiveTab({super.key});
@@ -30,32 +32,77 @@ class _ReceiveTabState extends State<ReceiveTab> {
   }
 
   Widget _buildWaitingView(BuildContext context, AppService appService) {
-    return Center(
+    return SingleChildScrollView(
       child: Padding(
         padding: const EdgeInsets.all(32.0),
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              appService.running ? Icons.wifi : Icons.wifi_off,
-              size: 80,
-              color: appService.running ? Colors.green : Colors.grey,
-            ),
-            const SizedBox(height: 24),
+            const SizedBox(height: 40),
+            // Large SCN Logo
+            const SCNLogo(size: 120),
+            const SizedBox(height: 32),
+            // Device Name
             Text(
-              appService.running ? 'Waiting for files...' : 'Server is offline',
-              style: Theme.of(context).textTheme.headlineSmall,
+              appService.deviceAlias,
+              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 8),
+            // Status
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  appService.running ? Icons.wifi : Icons.wifi_off,
+                  size: 16,
+                  color: appService.running ? Colors.green : Colors.grey,
+                ),
+                const SizedBox(width: 8),
+                Text(
+                  appService.running ? 'В сети' : 'Не в сети',
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                    color: appService.running ? Colors.green : Colors.grey,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 48),
+            // Quick Save Section
             Text(
-              appService.running 
-                ? 'Ready to receive files from nearby devices'
-                : 'Start the server to receive files',
-              style: Theme.of(context).textTheme.bodyMedium,
-              textAlign: TextAlign.center,
+              'Быстрое сохранение',
+              style: Theme.of(context).textTheme.titleSmall,
+            ),
+            const SizedBox(height: 16),
+            // Visibility Buttons
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                _buildVisibilityButton(
+                  context,
+                  appService,
+                  DeviceVisibility.disabled,
+                  'Отключено',
+                ),
+                const SizedBox(width: 8),
+                _buildVisibilityButton(
+                  context,
+                  appService,
+                  DeviceVisibility.favorites,
+                  'Избранное',
+                ),
+                const SizedBox(width: 8),
+                _buildVisibilityButton(
+                  context,
+                  appService,
+                  DeviceVisibility.enabled,
+                  'Включено',
+                ),
+              ],
             ),
             if (appService.running) ...[
-              const SizedBox(height: 32),
+              const SizedBox(height: 48),
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16.0),
@@ -78,6 +125,38 @@ class _ReceiveTabState extends State<ReceiveTab> {
           ],
         ),
       ),
+    );
+  }
+  
+  Widget _buildVisibilityButton(
+    BuildContext context,
+    AppService appService,
+    DeviceVisibility visibility,
+    String label,
+  ) {
+    final isSelected = appService.deviceVisibility == visibility;
+    final theme = Theme.of(context);
+    
+    return OutlinedButton(
+      onPressed: () {
+        appService.setDeviceVisibility(visibility);
+      },
+      style: OutlinedButton.styleFrom(
+        backgroundColor: isSelected 
+          ? theme.colorScheme.primary 
+          : Colors.transparent,
+        foregroundColor: isSelected 
+          ? Colors.white 
+          : theme.colorScheme.onSurface,
+        side: BorderSide(
+          color: isSelected 
+            ? theme.colorScheme.primary 
+            : theme.colorScheme.outline,
+          width: isSelected ? 2 : 1,
+        ),
+        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
+      ),
+      child: Text(label),
     );
   }
 

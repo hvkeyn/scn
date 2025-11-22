@@ -488,6 +488,26 @@ function Build-Simple {
     
     Push-Location "scn"
     try {
+        # Increment build version
+        Write-Info "Incrementing build version..."
+        $pubspecPath = "pubspec.yaml"
+        if (Test-Path $pubspecPath) {
+            $content = Get-Content $pubspecPath -Raw
+            if ($content -match 'version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)') {
+                $major = [int]$matches[1]
+                $minor = [int]$matches[2]
+                $patch = [int]$matches[3]
+                $build = [int]$matches[4]
+                $build++
+                $newVersion = "$major.$minor.$patch+$build"
+                $content = $content -replace 'version:\s*\d+\.\d+\.\d+\+\d+', "version: $newVersion"
+                Set-Content -Path $pubspecPath -Value $content -NoNewline
+                Write-Info "Version updated to: $newVersion"
+            } else {
+                Write-Warning "Could not parse version from pubspec.yaml"
+            }
+        }
+        
         if ($Clean) {
             Write-Info "Cleaning project..."
             & $flutterPath clean 2>&1 | Out-Null

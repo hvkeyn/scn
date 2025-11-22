@@ -6,6 +6,7 @@ import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/device_provider.dart';
 import 'package:scn/utils/device_name_generator.dart';
+import 'package:scn/models/device_visibility.dart';
 
 /// Main application service that coordinates all services
 class AppService extends ChangeNotifier {
@@ -15,12 +16,15 @@ class AppService extends ChangeNotifier {
   bool _initialized = false;
   bool _running = false;
   String _deviceAlias = 'SCN Device';
+  DeviceVisibility _deviceVisibility = DeviceVisibility.enabled;
   static const String _deviceAliasKey = 'device_alias';
+  static const String _deviceVisibilityKey = 'device_visibility';
   
   bool get initialized => _initialized;
   bool get running => _running;
   int get port => _httpServer.port;
   String get deviceAlias => _deviceAlias;
+  DeviceVisibility get deviceVisibility => _deviceVisibility;
   
   void setProviders({
     ReceiveProvider? receiveProvider,
@@ -83,6 +87,21 @@ class AppService extends ChangeNotifier {
       await prefs.setString(_deviceAliasKey, _deviceAlias);
     } catch (e) {
       debugPrint('Error saving device alias: $e');
+    }
+    
+    _updateDeviceInfo();
+    notifyListeners();
+  }
+  
+  /// Set device visibility and save to SharedPreferences
+  Future<void> setDeviceVisibility(DeviceVisibility visibility) async {
+    _deviceVisibility = visibility;
+    
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setInt(_deviceVisibilityKey, visibility.index);
+    } catch (e) {
+      debugPrint('Error saving device visibility: $e');
     }
     
     _updateDeviceInfo();
