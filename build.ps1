@@ -539,6 +539,248 @@ function Build-Simple {
             Write-Info "Executable: $exeFullPath"
         }
         
+        Pop-Location
+    }
+    catch {
+        Pop-Location
+        throw
+    }
+}
+
+function Build-Simple-Linux {
+    param([string]$Type = "bundle")
+    
+    Write-Info "Starting Linux build for SCN..."
+    
+    if (-not (Test-Path "scn\pubspec.yaml")) {
+        throw "Project not found at scn\"
+    }
+    
+    # Check if running on Windows - need WSL
+    $isWindows = Test-IsWindows
+    if ($isWindows) {
+        Write-Info "Windows detected - using WSL for Linux build..."
+        $currentPath = (Get-Location).Path
+        
+        # Try different WSL path formats
+        $driveLetter = $currentPath.Substring(0, 1).ToLower()
+        $relativePath = $currentPath.Substring(3) -replace '\\', '/'
+        
+        $wslPaths = @(
+            "/mnt/$driveLetter$relativePath",
+            "/mnt/host/$driveLetter$relativePath",
+            "/host_mnt/$driveLetter$relativePath"
+        )
+        
+        # Also try with explicit slash after drive letter
+        if ($relativePath -notmatch '^/') {
+            $relativePath = "/$relativePath"
+            $wslPaths += @(
+                "/mnt/$driveLetter$relativePath",
+                "/mnt/host/$driveLetter$relativePath"
+            )
+        }
+        
+        Write-Info "Trying WSL paths..."
+        $wslPath = $null
+        foreach ($path in $wslPaths) {
+            Write-Info "  Testing: $path"
+            $testResult = wsl -d docker-desktop -e sh -c "test -d '$path' && echo 'EXISTS' || echo 'NOT_FOUND'" 2>&1
+            if ($testResult -match 'EXISTS') {
+                $wslPath = $path
+                Write-Info "Found accessible path: $wslPath"
+                break
+            }
+        }
+        
+        if (-not $wslPath) {
+            Write-Warning "Could not find accessible WSL path"
+            Write-Info "Please run build.sh manually in WSL:"
+            Write-Info "  1. Open WSL: wsl"
+            Write-Info "  2. Navigate to project (try: cd /mnt/host/e/PPROJECTS/scn or cd /mnt/e/PPROJECTS/scn)"
+            Write-Info "  3. Run: chmod +x build.sh && ./build.sh"
+            throw "Could not determine WSL path for project"
+        }
+        
+        Write-Info "Running build.sh in WSL at: $wslPath"
+        
+        # Try to run build.sh via WSL
+        $buildScript = Join-Path $currentPath "build.sh"
+        if (Test-Path $buildScript) {
+            try {
+                $result = wsl -d docker-desktop -e sh -c "cd '$wslPath' && chmod +x build.sh && ./build.sh" 2>&1
+                $result | ForEach-Object { Write-Host $_ }
+                
+                # Check if build succeeded by looking for output directory
+                $releaseDir = Join-Path $currentPath "scn-release-linux"
+                if (Test-Path $releaseDir) {
+                    Write-Success "Linux build completed via WSL!"
+                    $releaseFullPath = (Resolve-Path $releaseDir).Path
+                    Write-Info "Release package: $releaseFullPath"
+                    return
+                } else {
+                    throw "Build may have failed - release directory not found"
+                }
+            } catch {
+                Write-ErrorMsg "WSL build failed: $_"
+                Write-Info "You may need to run build.sh manually in WSL:"
+                Write-Info "  wsl -d docker-desktop"
+                Write-Info "  cd $wslPath"
+                Write-Info "  ./build.sh"
+                throw
+            }
+        } else {
+            throw "build.sh not found at: $buildScript"
+        }
+    }
+    
+    # Native Linux build (if running on Linux)
+    # Get Flutter command and resolve path
+    $flutterCmd = Get-FlutterCommand
+    $flutterPath = $flutterCmd
+    
+    # Resolve Flutter path if it's a relative path
+    if ($flutterCmd -like "*\*" -or $flutterCmd -like "*/*") {
+        if (-not ([System.IO.Path]::IsPathRooted($flutterCmd))) {
+            $rootDir = (Get-Location).Path
+            $flutterPath = Join-Path $rootDir $flutterCmd
+            if (-not (Test-Path $flutterPath)) {
+                throw "Flutter not found at path: $flutterPath"
+            }
+            $flutterPath = (Resolve-Path $flutterPath).Path
+        }
+    }
+    
+    Push-Location "scn"
+    try {
+        # Increment build version
+        Write-Info "Incrementing build version..."
+        $pubspecPath = "pubspec.yaml"
+        if (Test-Path $pubspecPath) {
+            $content = Get-Content $pubspecPath -Raw
+            if ($content -match 'version:\s*(\d+)\.(\d+)\.(\d+)\+(\d+)') {
+                $major = [int]$matches[1]
+                $minor = [int]$matches[2]
+                $patch = [int]$matches[3]
+                $build = [int]$matches[4]
+                $build++
+                $newVersion = "$major.$minor.$patch+$build"
+                $content = $content -replace 'version:\s*\d+\.\d+\.\d+\+\d+', "version: $newVersion"
+                Set-Content -Path $pubspecPath -Value $content -NoNewline
+                Write-Info "Version updated to: $newVersion"
+            } else {
+                Write-Warning "Could not parse version from pubspec.yaml"
+            }
+        }
+        
+        if ($Clean) {
+            Write-Info "Cleaning project..."
+            & $flutterPath clean 2>&1 | Out-Null
+            
+            if (Test-Path "build/linux") {
+                Remove-Item "build/linux" -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+        
+        Write-Info "Getting dependencies..."
+        & $flutterPath pub get
+        if ($LASTEXITCODE -ne 0) {
+            throw "Failed to get dependencies"
+        }
+        
+        Write-Info "Building Linux application..."
+        & $flutterPath build linux --release
+        if ($LASTEXITCODE -ne 0) {
+            throw "Flutter build failed with exit code: $LASTEXITCODE"
+        }
+        
+        Write-Success "Linux build completed!"
+        
+        # Show output location
+        $buildPath = "build/linux/x64/release/bundle"
+        $executable = Join-Path $buildPath "scn"
+        if (Test-Path $executable) {
+            $execFullPath = (Resolve-Path $executable).Path
+            Write-Info "Executable: $execFullPath"
+        }
+        
+        # Create release package
+        Write-Info "Creating release package..."
+        $releaseDir = Join-Path (Get-Location).Path "../scn-release-linux"
+        if (Test-Path $releaseDir) {
+            try {
+                Remove-Item $releaseDir -Recurse -Force -ErrorAction Stop
+            } catch {
+                Write-Warning "Could not remove release directory, cleaning files individually..."
+                Get-ChildItem -Path $releaseDir -Recurse -File | Remove-Item -Force -ErrorAction SilentlyContinue
+                Get-ChildItem -Path $releaseDir -Recurse -Directory | Remove-Item -Force -ErrorAction SilentlyContinue
+            }
+        }
+        if (-not (Test-Path $releaseDir)) {
+            New-Item -ItemType Directory -Path $releaseDir -Force | Out-Null
+        }
+        
+        # Copy all files from bundle
+        Copy-Item -Path "$buildPath/*" -Destination $releaseDir -Recurse -Force
+        
+        # Make executable
+        $releaseExec = Join-Path $releaseDir "scn"
+        if (Test-Path $releaseExec) {
+            # In WSL or Linux, make executable
+            if (Test-IsLinux -or (Test-Command "chmod")) {
+                & chmod +x $releaseExec 2>&1 | Out-Null
+            }
+        }
+        
+        # Create README
+        $readmeContent = @"
+SCN - Linux Release Package
+===========================
+
+This folder contains all necessary files to run SCN on Linux.
+
+STRUCTURE:
+----------
+- scn                    - Main executable
+- lib/                   - Application libraries
+- data/                  - Application data
+  - flutter_assets/     - Resources
+
+RUN:
+----
+Make executable (if needed):
+  chmod +x scn
+
+Run:
+  ./scn
+
+REQUIREMENTS:
+-------------
+- Linux (Ubuntu 20.04+, Debian 11+, or similar)
+- GTK 3.0 or higher
+- glibc 2.31 or higher
+
+NOTES:
+------
+- All files must remain in this folder
+- Do not move individual files - application will not start
+- The data/ folder contains critical files
+
+VERSION:
+--------
+SCN 1.0.0
+Secure Connection Network - Simplified version without Rust dependencies
+"@
+        Set-Content -Path (Join-Path $releaseDir "README.txt") -Value $readmeContent -Encoding UTF8
+        
+        $releaseFullPath = (Resolve-Path $releaseDir).Path
+        Write-Success "Release package created at: $releaseFullPath"
+        
+        # Calculate total size
+        $totalSize = (Get-ChildItem -Path $releaseDir -Recurse -File | Measure-Object -Property Length -Sum).Sum
+        $totalSizeMB = [math]::Round($totalSize / 1MB, 2)
+        Write-Info "Total package size: $totalSizeMB MB"
+        
         # Create release package
         Write-Info "Creating release package..."
         $releaseDir = Join-Path (Get-Location).Path "..\scn-release"
@@ -1925,11 +2167,8 @@ if ($Project -eq 'scn') {
 $buildWindows = ($Platform -eq 'windows' -or $Platform -eq 'all')
 $buildLinux = ($Platform -eq 'linux' -or $Platform -eq 'all')
 
-# Linux build not yet supported
-if ($buildLinux) {
-    Write-Warning "Linux build not yet supported. Skipping..."
-    $buildLinux = $false
-}
+# Linux build is supported for SCN project
+# Note: For Linux builds, use WSL or native Linux environment
 
 $isWindows = Test-IsWindows
 $isLinux = Test-IsLinux
@@ -1956,7 +2195,11 @@ try {
     }
     
     if ($buildLinux) {
-        Build-Linux
+        if ($Project -eq 'scn') {
+            Build-Simple-Linux
+        } else {
+            Build-Linux
+        }
         Write-Host ""
     }
     

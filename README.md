@@ -25,19 +25,22 @@ SCN (Secure Connection Network) is a simplified version of an application for se
 - **shelf** - HTTP server for receiving files
 - **multicast_dns** - Device discovery on network
 - **Provider** - State management
+- **WSL** - Windows Subsystem for Linux (for building Linux on Windows)
 
 ## Installation and Setup
 
 ### Requirements
 
 - Flutter SDK 3.25.0 or higher
-- Windows 10+ (for Windows builds)
+- **Windows 10+** (for Windows builds)
+- **Linux** (Ubuntu 20.04+, Debian 11+, or similar) - for Linux builds
+- **WSL** (Windows Subsystem for Linux) - for building Linux on Windows
 
 ### Building from Source
 
 1. Clone the repository:
 ```bash
-git clone <repository-url>
+git clone https://github.com/hvkeyn/scn.git
 cd scn
 ```
 
@@ -56,14 +59,24 @@ flutter pub get
 # Windows
 flutter build windows
 
-# Or use build script
+# Or use build script (from project root)
 cd ..
-.\build.ps1 -Project scn -Platform windows -BuildType zip
+.\build.ps1 -Platform windows
+
+# Linux (native or WSL)
+chmod +x build.sh
+./build.sh
+
+# Note: For Windows, you need Ubuntu WSL. See LINUX_BUILD.md for details.
+
+# Or from scn directory
+cd scn
+flutter build linux --release
 ```
 
-### Pre-built Release
+### Pre-built Releases
 
-Pre-built release is located in `scn-release/` folder:
+**Windows release** is located in `scn-release/` folder:
 
 ```
 scn-release/
@@ -76,8 +89,20 @@ scn-release/
 └── README.txt             - Instructions
 ```
 
+**Linux release** is located in `scn-release-linux/` folder:
+
+```
+scn-release-linux/
+├── scn                     - Main executable
+├── lib/                    - Application libraries
+├── data/                   - Application data
+│   └── flutter_assets/   - Resources
+└── README.txt             - Instructions
+```
+
 **Run:**
-Simply double-click `scn.exe` or run from command line.
+- **Windows:** Double-click `scn.exe` or run: `.\scn.exe`
+- **Linux:** Make executable: `chmod +x scn`, then run: `./scn`
 
 ## Usage
 
@@ -136,6 +161,7 @@ scn/
 │   └── widgets/               - Widgets
 │       └── scn_logo.dart            - SCN logo
 ├── windows/                   - Windows configuration
+├── linux/                     - Linux configuration
 ├── pubspec.yaml              - Dependencies
 └── README.md                 - This file
 ```
@@ -158,9 +184,16 @@ SCN uses a simple HTTP-based protocol for data exchange:
 
 ### Running in Development Mode
 
+**Windows:**
 ```bash
 cd scn
 flutter run -d windows
+```
+
+**Linux:**
+```bash
+cd scn
+flutter run -d linux
 ```
 
 ### Testing
@@ -172,20 +205,33 @@ flutter test
 
 ### Building Release
 
-Use the `build.ps1` script:
-
+**Windows:**
 ```powershell
-.\build.ps1 -Project scn -Platform windows -BuildType zip
+.\build.ps1 -Platform windows
 ```
-
 Result will be in `scn-release/` folder.
+
+**Linux (native or WSL):**
+```bash
+chmod +x build.sh
+./build.sh
+```
+Result will be in `scn-release-linux/` folder.
+
+**Linux on Windows (via WSL):**
+```powershell
+.\build.ps1 -Platform linux
+```
+The script will automatically detect and use Ubuntu WSL if available.
+
+**Note:** For building Linux on Windows, you need **Ubuntu WSL** installed (not just docker-desktop). See `LINUX_BUILD.md` for detailed setup instructions.
 
 ## Compatibility
 
 | Platform | Minimum Version | Status |
 |----------|----------------|--------|
 | Windows  | 10              | ✅ Supported |
-| Linux    | -               | 🚧 In development |
+| Linux    | Ubuntu 20.04+   | ✅ Supported |
 | macOS    | -               | 🚧 In development |
 | Android  | -               | 📋 Planned |
 | iOS      | -               | 📋 Planned |
@@ -229,8 +275,8 @@ Current version: **1.0.0**
 
 ## Contacts
 
-- GitHub: [repository link]
-- Issues: [issues link]
+- GitHub: https://github.com/hvkeyn/scn
+- Issues: https://github.com/hvkeyn/scn/issues
 
 ---
 
