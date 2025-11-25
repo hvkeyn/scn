@@ -2,12 +2,17 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/device_provider.dart';
+import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/services/app_service.dart';
 import 'package:scn/services/http_client_service.dart';
 import 'package:scn/models/session.dart';
 import 'package:scn/models/file_info.dart';
 import 'package:scn/models/device_visibility.dart';
+import 'package:scn/models/remote_peer.dart';
 import 'package:scn/widgets/scn_logo.dart';
+import 'package:scn/widgets/add_peer_dialog.dart';
+import 'package:scn/widgets/invitation_card.dart';
+import 'package:scn/widgets/peer_tile.dart';
 
 class ReceiveTab extends StatefulWidget {
   const ReceiveTab({super.key});
@@ -32,131 +37,544 @@ class _ReceiveTabState extends State<ReceiveTab> {
   }
 
   Widget _buildWaitingView(BuildContext context, AppService appService) {
-    return SingleChildScrollView(
-      child: Padding(
-        padding: const EdgeInsets.all(32.0),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            const SizedBox(height: 40),
-            // Large SCN Logo
-            const SCNLogo(size: 120),
-            const SizedBox(height: 32),
-            // Device Name
-            Text(
-              appService.deviceAlias,
-              style: Theme.of(context).textTheme.headlineMedium?.copyWith(
-                fontWeight: FontWeight.bold,
+    return Consumer<RemotePeerProvider>(
+      builder: (context, peerProvider, _) {
+        final invitations = peerProvider.pendingInvitations;
+        final connectedPeers = peerProvider.connectedPeers;
+        final allPeers = peerProvider.peers;
+        
+        return CustomScrollView(
+          slivers: [
+            // Header with logo and device info
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(32, 40, 32, 24),
+                child: Column(
+                  children: [
+                    // Large SCN Logo
+                    const SCNLogo(size: 100),
+                    const SizedBox(height: 24),
+                    // Device Name
+                    Text(
+                      appService.deviceAlias,
+                      style: Theme.of(context).textTheme.headlineMedium?.copyWith(
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    // Status Row
+                    _buildStatusRow(context, appService, connectedPeers.length),
+                    const SizedBox(height: 24),
+                    // Visibility Buttons
+                    _buildVisibilitySection(context, appService),
+                  ],
+                ),
               ),
             ),
-            const SizedBox(height: 8),
-            // Status
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Icon(
-                  appService.running ? Icons.wifi : Icons.wifi_off,
-                  size: 16,
-                  color: appService.running ? Colors.green : Colors.grey,
+            
+            // Pending Invitations
+            if (invitations.isNotEmpty) ...[
+              SliverToBoxAdapter(
+                child: _buildSectionHeader(
+                  context, 
+                  'Incoming Connections',
+                  Icons.person_add,
+                  badgeCount: invitations.length,
                 ),
-                const SizedBox(width: 8),
-                Text(
-                  appService.running ? 'В сети' : 'Не в сети',
-                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                    color: appService.running ? Colors.green : Colors.grey,
-                  ),
-                ),
-              ],
-            ),
-            const SizedBox(height: 48),
-            // Quick Save Section
-            Text(
-              'Быстрое сохранение',
-              style: Theme.of(context).textTheme.titleSmall,
-            ),
-            const SizedBox(height: 16),
-            // Visibility Buttons
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                _buildVisibilityButton(
-                  context,
-                  appService,
-                  DeviceVisibility.disabled,
-                  'Отключено',
-                ),
-                const SizedBox(width: 8),
-                _buildVisibilityButton(
-                  context,
-                  appService,
-                  DeviceVisibility.favorites,
-                  'Избранное',
-                ),
-                const SizedBox(width: 8),
-                _buildVisibilityButton(
-                  context,
-                  appService,
-                  DeviceVisibility.enabled,
-                  'Включено',
-                ),
-              ],
-            ),
-            if (appService.running) ...[
-              const SizedBox(height: 48),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16.0),
-                  child: Column(
-                    children: [
-                      Text(
-                        'Server Status',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Port: ${appService.port}',
-                        style: Theme.of(context).textTheme.bodyLarge,
-                      ),
-                    ],
-                  ),
+              ),
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final invitation = invitations[index];
+                    return InvitationCard(
+                      invitation: invitation,
+                      onAccept: (password) async {
+                        final meshService = appService.meshService;
+                        await meshService?.acceptInvitation(invitation, password: password);
+                      },
+                      onReject: () {
+                        final meshService = appService.meshService;
+                        meshService?.rejectInvitation(invitation);
+                      },
+                    );
+                  },
+                  childCount: invitations.length,
                 ),
               ),
             ],
+            
+            // Connected Peers Section
+            if (connectedPeers.isNotEmpty) ...[
+              SliverToBoxAdapter(
+                child: _buildSectionHeader(
+                  context, 
+                  'Connected Peers',
+                  Icons.link,
+                  badgeCount: connectedPeers.length,
+                  badgeColor: Colors.green,
+                ),
+              ),
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final peer = connectedPeers[index];
+                    return PeerTile(
+                      peer: peer,
+                      onDisconnect: () {
+                        appService.meshService?.disconnectPeer(peer.id);
+                      },
+                      onToggleFavorite: () {
+                        peerProvider.toggleFavorite(peer.id);
+                      },
+                      onRemove: () {
+                        _confirmRemovePeer(context, peerProvider, peer);
+                      },
+                    );
+                  },
+                  childCount: connectedPeers.length,
+                ),
+              ),
+            ],
+            
+            // All Saved Peers
+            if (allPeers.isNotEmpty) ...[
+              SliverToBoxAdapter(
+                child: _buildSectionHeader(
+                  context, 
+                  'Saved Peers',
+                  Icons.devices,
+                  action: IconButton(
+                    icon: const Icon(Icons.add_circle_outline, color: Colors.white70),
+                    onPressed: () => _showAddPeerDialog(context, appService),
+                    tooltip: 'Add Remote Peer',
+                  ),
+                ),
+              ),
+              SliverList(
+                delegate: SliverChildBuilderDelegate(
+                  (context, index) {
+                    final peer = allPeers[index];
+                    // Skip already connected peers (shown above)
+                    if (peer.status == PeerStatus.connected) {
+                      return const SizedBox.shrink();
+                    }
+                    return PeerTile(
+                      peer: peer,
+                      onConnect: () async {
+                        await appService.meshService?.connectToAddress(
+                          address: peer.address,
+                          port: peer.port,
+                        );
+                      },
+                      onToggleFavorite: () {
+                        peerProvider.toggleFavorite(peer.id);
+                      },
+                      onRemove: () {
+                        _confirmRemovePeer(context, peerProvider, peer);
+                      },
+                    );
+                  },
+                  childCount: allPeers.length,
+                ),
+              ),
+            ],
+            
+            // Empty state - Add first peer
+            if (allPeers.isEmpty)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(32),
+                  child: _buildEmptyState(context, appService),
+                ),
+              ),
+            
+            // Server info card
+            if (appService.running)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: _buildServerInfoCard(context, appService),
+                ),
+              ),
+            
+            // Bottom padding
+            const SliverPadding(padding: EdgeInsets.only(bottom: 100)),
           ],
-        ),
-      ),
+        );
+      },
     );
   }
-  
+
+  Widget _buildStatusRow(BuildContext context, AppService appService, int connectedCount) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        // Online status
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: appService.running 
+                ? Colors.green.withOpacity(0.2)
+                : Colors.grey.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(20),
+            border: Border.all(
+              color: appService.running 
+                  ? Colors.green.withOpacity(0.5)
+                  : Colors.grey.withOpacity(0.5),
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                appService.running ? Icons.wifi : Icons.wifi_off,
+                size: 14,
+                color: appService.running ? Colors.green : Colors.grey,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                appService.running ? 'Online' : 'Offline',
+                style: TextStyle(
+                  fontSize: 12,
+                  color: appService.running ? Colors.green : Colors.grey,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+            ],
+          ),
+        ),
+        
+        if (connectedCount > 0) ...[
+          const SizedBox(width: 8),
+          // Connected peers badge
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.primary.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: Theme.of(context).colorScheme.primary.withOpacity(0.5),
+              ),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.people,
+                  size: 14,
+                  color: Theme.of(context).colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  '$connectedCount peers',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.primary,
+                    fontWeight: FontWeight.w500,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildVisibilitySection(BuildContext context, AppService appService) {
+    return Column(
+      children: [
+        Text(
+          'Quick Save',
+          style: Theme.of(context).textTheme.titleSmall?.copyWith(
+            color: Colors.white70,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            _buildVisibilityButton(
+              context,
+              appService,
+              DeviceVisibility.disabled,
+              'Off',
+              Icons.visibility_off,
+            ),
+            const SizedBox(width: 8),
+            _buildVisibilityButton(
+              context,
+              appService,
+              DeviceVisibility.favorites,
+              'Favorites',
+              Icons.star,
+            ),
+            const SizedBox(width: 8),
+            _buildVisibilityButton(
+              context,
+              appService,
+              DeviceVisibility.enabled,
+              'Everyone',
+              Icons.public,
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+
   Widget _buildVisibilityButton(
     BuildContext context,
     AppService appService,
     DeviceVisibility visibility,
     String label,
+    IconData icon,
   ) {
     final isSelected = appService.deviceVisibility == visibility;
     final theme = Theme.of(context);
     
-    return OutlinedButton(
-      onPressed: () {
-        appService.setDeviceVisibility(visibility);
-      },
-      style: OutlinedButton.styleFrom(
-        backgroundColor: isSelected 
-          ? theme.colorScheme.primary 
-          : Colors.transparent,
-        foregroundColor: isSelected 
-          ? Colors.white 
-          : theme.colorScheme.onSurface,
-        side: BorderSide(
-          color: isSelected 
-            ? theme.colorScheme.primary 
-            : theme.colorScheme.outline,
-          width: isSelected ? 2 : 1,
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => appService.setDeviceVisibility(visibility),
+        borderRadius: BorderRadius.circular(12),
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 200),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+          decoration: BoxDecoration(
+            color: isSelected 
+                ? theme.colorScheme.primary 
+                : Colors.white.withOpacity(0.05),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(
+              color: isSelected 
+                  ? theme.colorScheme.primary 
+                  : Colors.white.withOpacity(0.2),
+              width: isSelected ? 2 : 1,
+            ),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                icon,
+                size: 16,
+                color: isSelected ? Colors.white : Colors.white70,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                label,
+                style: TextStyle(
+                  color: isSelected ? Colors.white : Colors.white70,
+                  fontWeight: isSelected ? FontWeight.w600 : FontWeight.normal,
+                  fontSize: 13,
+                ),
+              ),
+            ],
+          ),
         ),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
       ),
-      child: Text(label),
+    );
+  }
+
+  Widget _buildSectionHeader(
+    BuildContext context, 
+    String title, 
+    IconData icon, {
+    int? badgeCount,
+    Color? badgeColor,
+    Widget? action,
+  }) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      child: Row(
+        children: [
+          Icon(icon, size: 18, color: Colors.white54),
+          const SizedBox(width: 8),
+          Text(
+            title,
+            style: const TextStyle(
+              color: Colors.white70,
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              letterSpacing: 0.5,
+            ),
+          ),
+          if (badgeCount != null) ...[
+            const SizedBox(width: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+              decoration: BoxDecoration(
+                color: (badgeColor ?? Theme.of(context).colorScheme.primary).withOpacity(0.2),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Text(
+                '$badgeCount',
+                style: TextStyle(
+                  color: badgeColor ?? Theme.of(context).colorScheme.primary,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ),
+          ],
+          const Spacer(),
+          if (action != null) action,
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context, AppService appService) {
+    return Column(
+      children: [
+        Container(
+          width: 80,
+          height: 80,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.05),
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            Icons.add_link,
+            size: 36,
+            color: Colors.white.withOpacity(0.3),
+          ),
+        ),
+        const SizedBox(height: 16),
+        Text(
+          'No peers connected',
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.7),
+            fontSize: 16,
+            fontWeight: FontWeight.w500,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Add a remote peer to start sharing files\nacross the network',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            color: Colors.white.withOpacity(0.4),
+            fontSize: 13,
+          ),
+        ),
+        const SizedBox(height: 24),
+        ElevatedButton.icon(
+          onPressed: () => _showAddPeerDialog(context, appService),
+          icon: const Icon(Icons.add),
+          label: const Text('Add Remote Peer'),
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Theme.of(context).colorScheme.primary,
+            foregroundColor: Colors.white,
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(12),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildServerInfoCard(BuildContext context, AppService appService) {
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.03),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.green.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: const Icon(Icons.dns, color: Colors.green, size: 20),
+          ),
+          const SizedBox(width: 12),
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text(
+                'Server Running',
+                style: TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                ),
+              ),
+              Text(
+                'Port ${appService.port}',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showAddPeerDialog(BuildContext context, AppService appService) async {
+    final result = await AddPeerDialog.show(context);
+    if (result != null && mounted) {
+      final success = await appService.meshService?.connectToAddress(
+        address: result.address,
+        port: result.port,
+        password: result.password,
+      );
+      
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              success == true 
+                  ? 'Connecting to ${result.address}...'
+                  : 'Failed to connect to ${result.address}',
+            ),
+            backgroundColor: success == true ? Colors.green : Colors.red,
+          ),
+        );
+      }
+    }
+  }
+
+  void _confirmRemovePeer(
+    BuildContext context, 
+    RemotePeerProvider provider, 
+    RemotePeer peer,
+  ) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        title: const Text('Remove Peer', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'Remove "${peer.alias}" from saved peers?',
+          style: const TextStyle(color: Colors.white70),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () {
+              provider.removePeer(peer.id);
+              Navigator.pop(context);
+            },
+            child: Text('Remove', style: TextStyle(color: Colors.red.shade300)),
+          ),
+        ],
+      ),
     );
   }
 
@@ -167,6 +585,8 @@ class _ReceiveTabState extends State<ReceiveTab> {
     return Column(
       children: [
         AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
           title: Text('Receiving from ${session.sender.alias}'),
           actions: [
             if (isWaiting)
@@ -190,7 +610,9 @@ class _ReceiveTabState extends State<ReceiveTab> {
             padding: const EdgeInsets.all(16.0),
             child: Text(
               'Select files to receive',
-              style: Theme.of(context).textTheme.titleMedium,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                color: Colors.white70,
+              ),
             ),
           ),
         Expanded(
@@ -203,8 +625,13 @@ class _ReceiveTabState extends State<ReceiveTab> {
               final file = fileEntry.value;
               final isSelected = _selectedFiles.contains(fileId);
               
-              return Card(
+              return Container(
                 margin: const EdgeInsets.only(bottom: 8),
+                decoration: BoxDecoration(
+                  color: Colors.white.withOpacity(0.05),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.white.withOpacity(0.1)),
+                ),
                 child: ListTile(
                   leading: isWaiting
                       ? Checkbox(
@@ -220,17 +647,29 @@ class _ReceiveTabState extends State<ReceiveTab> {
                           },
                         )
                       : _getFileIcon(file.file.fileType),
-                  title: Text(file.desiredName ?? file.file.fileName),
+                  title: Text(
+                    file.desiredName ?? file.file.fileName,
+                    style: const TextStyle(color: Colors.white),
+                  ),
                   subtitle: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      Text('${_formatFileSize(file.file.size)}'),
+                      Text(
+                        _formatFileSize(file.file.size),
+                        style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                      ),
                       if (file.status == FileStatus.sending || file.status == FileStatus.receiving)
                         const LinearProgressIndicator(),
                       if (file.status == FileStatus.finished)
-                        Text('Saved: ${file.savedPath ?? "unknown"}', style: const TextStyle(color: Colors.green)),
+                        Text(
+                          'Saved: ${file.savedPath ?? "unknown"}', 
+                          style: const TextStyle(color: Colors.green, fontSize: 12),
+                        ),
                       if (file.status == FileStatus.failed)
-                        Text('Error: ${file.errorMessage ?? "Unknown error"}', style: const TextStyle(color: Colors.red)),
+                        Text(
+                          'Error: ${file.errorMessage ?? "Unknown error"}', 
+                          style: const TextStyle(color: Colors.red, fontSize: 12),
+                        ),
                     ],
                   ),
                   trailing: isWaiting ? null : _getStatusIcon(file.status),
@@ -255,7 +694,6 @@ class _ReceiveTabState extends State<ReceiveTab> {
       return;
     }
     
-    // Call accept endpoint via HTTP client
     final httpClient = HttpClientService();
     final device = session.sender;
     
@@ -278,13 +716,14 @@ class _ReceiveTabState extends State<ReceiveTab> {
     );
     
     if (tokens == null || tokens.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Failed to accept files')),
-      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to accept files')),
+        );
+      }
       return;
     }
     
-    // Update session status to receiving
     final updatedFiles = Map<String, ReceivingFile>.from(session.files);
     for (final fileId in _selectedFiles) {
       final file = updatedFiles[fileId];
@@ -307,17 +746,18 @@ class _ReceiveTabState extends State<ReceiveTab> {
   }
 
   Widget _getFileIcon(FileType fileType) {
+    final color = Colors.white70;
     switch (fileType) {
       case FileType.image:
-        return const Icon(Icons.image);
+        return Icon(Icons.image, color: color);
       case FileType.video:
-        return const Icon(Icons.video_file);
+        return Icon(Icons.video_file, color: color);
       case FileType.audio:
-        return const Icon(Icons.audio_file);
+        return Icon(Icons.audio_file, color: color);
       case FileType.text:
-        return const Icon(Icons.text_snippet);
+        return Icon(Icons.text_snippet, color: color);
       default:
-        return const Icon(Icons.insert_drive_file);
+        return Icon(Icons.insert_drive_file, color: color);
     }
   }
 
@@ -335,7 +775,7 @@ class _ReceiveTabState extends State<ReceiveTab> {
           child: CircularProgressIndicator(strokeWidth: 2),
         );
       default:
-        return const Icon(Icons.pending);
+        return Icon(Icons.pending, color: Colors.white.withOpacity(0.5));
     }
   }
 

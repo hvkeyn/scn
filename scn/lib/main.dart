@@ -7,6 +7,7 @@ import 'package:scn/providers/device_provider.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/send_provider.dart';
 import 'package:scn/providers/chat_provider.dart';
+import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/pages/home_page.dart';
 import 'package:scn/utils/process_manager.dart';
 
@@ -32,6 +33,7 @@ void main() async {
   final receiveProvider = ReceiveProvider();
   final sendProvider = SendProvider();
   final chatProvider = ChatProvider();
+  final remotePeerProvider = RemotePeerProvider();
   
   // Initialize services
   final appService = AppService();
@@ -39,10 +41,14 @@ void main() async {
     receiveProvider: receiveProvider,
     chatProvider: chatProvider,
     deviceProvider: deviceProvider,
+    peerProvider: remotePeerProvider,
   );
   
   // Load device alias (or generate if first run)
   await appService.loadDeviceAlias();
+  
+  // Load saved remote peers
+  await remotePeerProvider.load();
   
   try {
     await appService.initialize();
@@ -60,13 +66,11 @@ void main() async {
         ChangeNotifierProvider.value(value: receiveProvider),
         ChangeNotifierProvider.value(value: sendProvider),
         ChangeNotifierProvider.value(value: chatProvider),
+        ChangeNotifierProvider.value(value: remotePeerProvider),
       ],
       child: const SCNApp(),
     ),
   );
-  
-  // Note: Lock file cleanup will happen automatically on next startup
-  // if the process is killed, or we can add cleanup in AppService.dispose()
 }
 
 class SCNApp extends StatelessWidget {
@@ -78,17 +82,53 @@ class SCNApp extends StatelessWidget {
       title: 'SCN - Secure Connection Network',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.blue),
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: const Color(0xFF6366f1),
+        ),
         useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFF0f0f23),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF1a1a2e),
+          foregroundColor: Colors.white,
+        ),
+        cardTheme: CardThemeData(
+          color: const Color(0xFF1a1a2e),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        dialogTheme: DialogThemeData(
+          backgroundColor: const Color(0xFF1a1a2e),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
       ),
       darkTheme: ThemeData(
         colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
+          seedColor: const Color(0xFF6366f1),
           brightness: Brightness.dark,
         ),
         useMaterial3: true,
+        scaffoldBackgroundColor: const Color(0xFF0f0f23),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF1a1a2e),
+          foregroundColor: Colors.white,
+        ),
+        cardTheme: CardThemeData(
+          color: const Color(0xFF1a1a2e),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
+        dialogTheme: DialogThemeData(
+          backgroundColor: const Color(0xFF1a1a2e),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(16),
+          ),
+        ),
       ),
-      themeMode: ThemeMode.system,
+      themeMode: ThemeMode.dark,
       localizationsDelegates: const [
         GlobalMaterialLocalizations.delegate,
         GlobalWidgetsLocalizations.delegate,
@@ -102,4 +142,3 @@ class SCNApp extends StatelessWidget {
     );
   }
 }
-

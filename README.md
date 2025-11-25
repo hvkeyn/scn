@@ -14,6 +14,8 @@ SCN (Secure Connection Network) is a simplified version of an application for se
 - ✅ **Secure file sharing** - Transfer files between devices on local network
 - ✅ **Real-time chat** - Exchange text messages between devices
 - ✅ **Automatic device discovery** - UDP multicast for finding devices on network
+- ✅ **Secure mesh network** - Connect remote peers via encrypted WebSocket channels
+- ✅ **DPI bypass** - WebSocket over TLS to bypass network restrictions
 - ✅ **Simple architecture** - Flutter/Dart only, no complex dependencies
 - ✅ **Cross-platform** - Windows, Linux, macOS (in development)
 - ✅ **Privacy** - Works without external servers, all data transmitted directly
@@ -111,7 +113,8 @@ scn-release-linux/
 For the application to work, you need to:
 
 1. **Configure firewall:**
-   - Allow incoming TCP/UDP connections on port 53317
+   - Allow incoming TCP/UDP connections on port 53317 (HTTP/Discovery)
+   - Allow incoming TCP connections on port 53318 (Secure WebSocket)
    - Allow outgoing TCP/UDP connections
 
 2. **Disable AP Isolation:**
@@ -120,6 +123,10 @@ For the application to work, you need to:
 
 3. **Set network as "Private":**
    - On Windows: configure network as "Private" (not "Public")
+
+4. **For remote connections:**
+   - Configure port forwarding on router for ports 53317-53318
+   - Or use VPN/tunneling for direct access
 
 ### Main Features
 
@@ -139,6 +146,8 @@ scn/
 │   │   ├── http_server_service.dart   - HTTP server
 │   │   ├── http_client_service.dart   - HTTP client
 │   │   ├── discovery_service.dart     - Device discovery
+│   │   ├── secure_channel_service.dart - WebSocket/TLS channel
+│   │   ├── mesh_network_service.dart  - Mesh network
 │   │   └── file_service.dart          - File operations
 │   ├── pages/                 - Application pages
 │   │   ├── home_page.dart            - Main page
@@ -151,15 +160,20 @@ scn/
 │   │   ├── device_provider.dart      - Devices
 │   │   ├── receive_provider.dart     - Receive state
 │   │   ├── send_provider.dart        - Send state
-│   │   └── chat_provider.dart        - Chat state
+│   │   ├── chat_provider.dart        - Chat state
+│   │   └── remote_peer_provider.dart - Remote peers
 │   ├── models/                - Data models
 │   │   ├── device.dart              - Device model
 │   │   ├── file_info.dart           - File information
 │   │   ├── session.dart             - Transfer session
 │   │   ├── chat_message.dart        - Chat message
-│   │   └── multicast_dto.dart        - Multicast data
+│   │   ├── multicast_dto.dart       - Multicast data
+│   │   └── remote_peer.dart         - Remote peer model
 │   └── widgets/               - Widgets
-│       └── scn_logo.dart            - SCN logo
+│       ├── scn_logo.dart            - SCN logo
+│       ├── add_peer_dialog.dart     - Add peer dialog
+│       ├── invitation_card.dart     - Invitation card
+│       └── peer_tile.dart           - Peer list tile
 ├── windows/                   - Windows configuration
 ├── linux/                     - Linux configuration
 ├── pubspec.yaml              - Dependencies
@@ -170,6 +184,7 @@ scn/
 
 SCN uses a simple HTTP-based protocol for data exchange:
 
+### Local Network
 - **Device discovery:** UDP multicast on port 53317
 - **HTTP server:** TCP on port 53317 (default)
 - **API endpoints:**
@@ -179,6 +194,12 @@ SCN uses a simple HTTP-based protocol for data exchange:
   - `POST /api/accept` - Accept files
   - `POST /api/upload` - Upload file
   - `POST /api/chat` - Send message
+
+### Secure Mesh Network
+- **Secure channel:** WebSocket over TLS on port 53318 (default)
+- **Mesh sync:** Automatic peer list propagation
+- **Authentication:** Optional password protection
+- **Message types:** handshake, peerList, invitation, data, ping/pong
 
 ## Development
 
@@ -271,7 +292,7 @@ We welcome contributions to the project! If you want to help:
 
 ## Version
 
-Current version: **1.0.0**
+Current version: **1.0.0+13**
 
 ## Contacts
 
