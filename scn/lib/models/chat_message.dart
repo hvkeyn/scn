@@ -2,7 +2,8 @@
 enum MessageType {
   text,       // Regular text message
   system,     // System message (join/leave/status)
-  file,       // File share notification
+  file,       // File attachment
+  image,      // Image attachment (shows preview)
 }
 
 /// User status
@@ -24,6 +25,12 @@ class ChatMessage {
   final MessageType type;
   final bool isGroupMessage;  // true for group chat, false for private
   
+  // File/Media fields
+  final String? fileName;
+  final int? fileSize;
+  final String? filePath;     // Local path after download
+  final String? mimeType;
+  
   ChatMessage({
     required this.id,
     required this.deviceId,
@@ -33,7 +40,54 @@ class ChatMessage {
     required this.isFromMe,
     this.type = MessageType.text,
     this.isGroupMessage = false,
+    this.fileName,
+    this.fileSize,
+    this.filePath,
+    this.mimeType,
   });
+  
+  /// Check if this is an image
+  bool get isImage {
+    if (type == MessageType.image) return true;
+    if (mimeType?.startsWith('image/') ?? false) return true;
+    final ext = fileName?.split('.').last.toLowerCase() ?? '';
+    return ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].contains(ext);
+  }
+  
+  /// Check if this is a video
+  bool get isVideo {
+    if (mimeType?.startsWith('video/') ?? false) return true;
+    final ext = fileName?.split('.').last.toLowerCase() ?? '';
+    return ['mp4', 'avi', 'mov', 'mkv', 'webm'].contains(ext);
+  }
+  
+  ChatMessage copyWith({
+    String? id,
+    String? deviceId,
+    String? deviceAlias,
+    String? message,
+    DateTime? timestamp,
+    bool? isFromMe,
+    MessageType? type,
+    bool? isGroupMessage,
+    String? fileName,
+    int? fileSize,
+    String? filePath,
+    String? mimeType,
+  }) => ChatMessage(
+    id: id ?? this.id,
+    deviceId: deviceId ?? this.deviceId,
+    deviceAlias: deviceAlias ?? this.deviceAlias,
+    message: message ?? this.message,
+    timestamp: timestamp ?? this.timestamp,
+    isFromMe: isFromMe ?? this.isFromMe,
+    type: type ?? this.type,
+    isGroupMessage: isGroupMessage ?? this.isGroupMessage,
+    fileName: fileName ?? this.fileName,
+    fileSize: fileSize ?? this.fileSize,
+    filePath: filePath ?? this.filePath,
+    mimeType: mimeType ?? this.mimeType,
+  );
   
   Map<String, dynamic> toJson() => {
     'id': id,
@@ -44,6 +98,10 @@ class ChatMessage {
     'isFromMe': isFromMe,
     'type': type.name,
     'isGroupMessage': isGroupMessage,
+    if (fileName != null) 'fileName': fileName,
+    if (fileSize != null) 'fileSize': fileSize,
+    if (filePath != null) 'filePath': filePath,
+    if (mimeType != null) 'mimeType': mimeType,
   };
   
   factory ChatMessage.fromJson(Map<String, dynamic> json) => ChatMessage(
@@ -58,6 +116,10 @@ class ChatMessage {
       orElse: () => MessageType.text,
     ),
     isGroupMessage: json['isGroupMessage'] as bool? ?? false,
+    fileName: json['fileName'] as String?,
+    fileSize: json['fileSize'] as int?,
+    filePath: json['filePath'] as String?,
+    mimeType: json['mimeType'] as String?,
   );
   
   /// Create a system message
@@ -71,6 +133,38 @@ class ChatMessage {
     type: MessageType.system,
     isGroupMessage: true,
   );
+  
+  /// Create a file message
+  factory ChatMessage.file({
+    required String id,
+    required String deviceId,
+    required String deviceAlias,
+    required String fileName,
+    required int fileSize,
+    required bool isFromMe,
+    String? filePath,
+    String? mimeType,
+    bool isGroupMessage = false,
+  }) {
+    final isImage = mimeType?.startsWith('image/') ?? false ||
+        ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
+            .contains(fileName.split('.').last.toLowerCase());
+    
+    return ChatMessage(
+      id: id,
+      deviceId: deviceId,
+      deviceAlias: deviceAlias,
+      message: fileName,
+      timestamp: DateTime.now(),
+      isFromMe: isFromMe,
+      type: isImage ? MessageType.image : MessageType.file,
+      isGroupMessage: isGroupMessage,
+      fileName: fileName,
+      fileSize: fileSize,
+      filePath: filePath,
+      mimeType: mimeType,
+    );
+  }
 }
 
 /// Chat participant with status

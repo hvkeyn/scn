@@ -1,11 +1,17 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:file_picker/file_picker.dart' as file_picker;
 import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/device_provider.dart';
 import 'package:scn/services/app_service.dart';
+import 'package:scn/services/http_client_service.dart';
 import 'package:scn/models/chat_message.dart';
 import 'package:scn/models/device.dart';
+import 'package:scn/models/file_info.dart';
+import 'package:scn/utils/file_opener.dart';
 import 'package:intl/intl.dart';
+import 'package:uuid/uuid.dart';
 
 class ChatTab extends StatefulWidget {
   const ChatTab({super.key});
@@ -17,6 +23,8 @@ class ChatTab extends StatefulWidget {
 class _ChatTabState extends State<ChatTab> {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
+  final _uuid = const Uuid();
+  bool _isSendingFile = false;
   
   @override
   void dispose() {
@@ -100,6 +108,17 @@ class _ChatTabState extends State<ChatTab> {
         ? groupChat!.messages.last 
         : null;
     
+    String lastMessageText = 'Start chatting with everyone!';
+    if (lastMessage != null) {
+      if (lastMessage.type == MessageType.image) {
+        lastMessageText = '📷 Photo';
+      } else if (lastMessage.type == MessageType.file) {
+        lastMessageText = '📎 ${lastMessage.fileName}';
+      } else {
+        lastMessageText = lastMessage.message;
+      }
+    }
+    
     return Material(
       color: Colors.transparent,
       child: InkWell(
@@ -162,7 +181,7 @@ class _ChatTabState extends State<ChatTab> {
                     ),
                     const SizedBox(height: 4),
                     Text(
-                      lastMessage?.message ?? 'Start chatting with everyone!',
+                      lastMessageText,
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.6),
                         fontSize: 13,
@@ -211,6 +230,18 @@ class _ChatTabState extends State<ChatTab> {
         lastMessageTime: DateTime.now(),
       ),
     );
+    
+    String lastMessageText = _getStatusText(participant.status);
+    if (conversation.messages.isNotEmpty) {
+      final lastMsg = conversation.messages.last;
+      if (lastMsg.type == MessageType.image) {
+        lastMessageText = '📷 Photo';
+      } else if (lastMsg.type == MessageType.file) {
+        lastMessageText = '📎 ${lastMsg.fileName}';
+      } else {
+        lastMessageText = lastMsg.message;
+      }
+    }
     
     return Card(
       margin: const EdgeInsets.only(bottom: 8),
@@ -272,9 +303,7 @@ class _ChatTabState extends State<ChatTab> {
                     ),
                     const SizedBox(height: 2),
                     Text(
-                      conversation.messages.isNotEmpty
-                          ? conversation.messages.last.message
-                          : _getStatusText(participant.status),
+                      lastMessageText,
                       style: TextStyle(
                         color: Colors.white.withOpacity(0.5),
                         fontSize: 12,
@@ -471,7 +500,7 @@ class _ChatTabState extends State<ChatTab> {
                 ),
         ),
         
-        // Input
+        // Input with file attachment
         Container(
           padding: const EdgeInsets.all(12),
           decoration: BoxDecoration(
@@ -482,6 +511,20 @@ class _ChatTabState extends State<ChatTab> {
           ),
           child: Row(
             children: [
+              // Attachment button
+              IconButton(
+                icon: _isSendingFile 
+                    ? const SizedBox(
+                        width: 20, 
+                        height: 20, 
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.attach_file, color: Colors.white54),
+                onPressed: _isSendingFile 
+                    ? null 
+                    : () => _pickAndSendFile(context, chatProvider, appService, isGroupChat, conversation),
+              ),
+              
               Expanded(
                 child: TextField(
                   controller: _messageController,
@@ -541,6 +584,17 @@ class _ChatTabState extends State<ChatTab> {
       );
     }
     
+    // Image message
+    if (message.type == MessageType.image && message.filePath != null) {
+      return _buildImageBubble(context, message, isGroupChat);
+    }
+    
+    // File message
+    if (message.type == MessageType.file) {
+      return _buildFileBubble(context, message, isGroupChat);
+    }
+    
+    // Text message
     return Align(
       alignment: message.isFromMe ? Alignment.centerRight : Alignment.centerLeft,
       child: Container(
@@ -594,6 +648,277 @@ class _ChatTabState extends State<ChatTab> {
     );
   }
   
+  Widget _buildImageBubble(BuildContext context, ChatMessage message, bool isGroupChat) {
+    return Align(
+      alignment: message.isFromMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.75,
+        ),
+        child: Column(
+          crossAxisAlignment: message.isFromMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+          children: [
+            // Sender name in group
+            if (isGroupChat && !message.isFromMe)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 4, left: 8),
+                child: Text(
+                  message.deviceAlias,
+                  style: TextStyle(
+                    color: Theme.of(context).colorScheme.primary,
+                    fontWeight: FontWeight.bold,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            
+            // Image
+            GestureDetector(
+              onTap: () => FileOpener.openFile(message.filePath!),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(12),
+                child: Image.file(
+                  File(message.filePath!),
+                  fit: BoxFit.cover,
+                  width: 250,
+                  height: 200,
+                  errorBuilder: (_, __, ___) => Container(
+                    width: 250,
+                    height: 100,
+                    color: Colors.white.withOpacity(0.1),
+                    child: const Icon(Icons.broken_image, color: Colors.white54),
+                  ),
+                ),
+              ),
+            ),
+            
+            // Time
+            Padding(
+              padding: const EdgeInsets.only(top: 4, right: 4),
+              child: Text(
+                _formatTime(message.timestamp),
+                style: TextStyle(
+                  fontSize: 10,
+                  color: Colors.white.withOpacity(0.5),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+  
+  Widget _buildFileBubble(BuildContext context, ChatMessage message, bool isGroupChat) {
+    return Align(
+      alignment: message.isFromMe ? Alignment.centerRight : Alignment.centerLeft,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        constraints: BoxConstraints(
+          maxWidth: MediaQuery.of(context).size.width * 0.75,
+        ),
+        decoration: BoxDecoration(
+          color: message.isFromMe
+              ? Theme.of(context).colorScheme.primary
+              : Colors.white.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: Material(
+          color: Colors.transparent,
+          child: InkWell(
+            onTap: message.filePath != null 
+                ? () => FileOpener.openFile(message.filePath!)
+                : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Sender name in group
+                  if (isGroupChat && !message.isFromMe)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 8),
+                      child: Text(
+                        message.deviceAlias,
+                        style: TextStyle(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.bold,
+                          fontSize: 12,
+                        ),
+                      ),
+                    ),
+                  
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: Colors.white.withOpacity(0.1),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: const Icon(Icons.insert_drive_file, color: Colors.white, size: 24),
+                      ),
+                      const SizedBox(width: 12),
+                      Flexible(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              message.fileName ?? 'File',
+                              style: const TextStyle(
+                                color: Colors.white,
+                                fontWeight: FontWeight.w500,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (message.fileSize != null)
+                              Text(
+                                _formatFileSize(message.fileSize!),
+                                style: TextStyle(
+                                  color: Colors.white.withOpacity(0.5),
+                                  fontSize: 12,
+                                ),
+                              ),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  
+                  // Time
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8),
+                    child: Text(
+                      _formatTime(message.timestamp),
+                      style: TextStyle(
+                        fontSize: 10,
+                        color: Colors.white.withOpacity(0.5),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+  
+  Future<void> _pickAndSendFile(
+    BuildContext context,
+    ChatProvider chatProvider,
+    AppService appService,
+    bool isGroupChat,
+    ChatConversation conversation,
+  ) async {
+    final result = await file_picker.FilePicker.platform.pickFiles(
+      allowMultiple: false,
+      type: file_picker.FileType.any,
+    );
+    
+    if (result == null || result.files.isEmpty) return;
+    
+    final file = result.files.first;
+    if (file.path == null) return;
+    
+    setState(() => _isSendingFile = true);
+    
+    try {
+      // Determine file type
+      final isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']
+          .contains(file.extension?.toLowerCase());
+      
+      // Get target devices
+      List<Device> targets = [];
+      if (isGroupChat) {
+        for (final p in chatProvider.onlineParticipants) {
+          targets.add(Device(
+            id: p.deviceId,
+            alias: p.alias,
+            ip: p.ip,
+            port: p.port,
+            type: DeviceType.desktop,
+          ));
+        }
+      } else {
+        final participant = chatProvider.getParticipant(conversation.deviceId);
+        if (participant != null) {
+          targets.add(Device(
+            id: participant.deviceId,
+            alias: participant.alias,
+            ip: participant.ip,
+            port: participant.port,
+            type: DeviceType.desktop,
+          ));
+        }
+      }
+      
+      if (targets.isEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('No recipients available')),
+        );
+        return;
+      }
+      
+      // Send file to each target
+      final httpClient = HttpClientService();
+      final ext = file.extension?.toLowerCase() ?? '';
+      final fileType = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].contains(ext)
+          ? FileType.image
+          : ['mp4', 'avi', 'mov', 'mkv', 'webm'].contains(ext)
+              ? FileType.video
+              : FileType.other;
+      final fileInfo = FileInfo(
+        id: _uuid.v4(),
+        fileName: file.name,
+        size: file.size,
+        fileType: fileType,
+      );
+      
+      for (final target in targets) {
+        try {
+          // Send file with chat flag
+          await httpClient.sendFileWithChat(
+            target: target,
+            filePath: file.path!,
+            fileInfo: fileInfo,
+            senderId: appService.deviceId,
+            senderAlias: appService.deviceAlias,
+            isGroupMessage: isGroupChat,
+          );
+        } catch (e) {
+          debugPrint('Failed to send file to ${target.alias}: $e');
+        }
+      }
+      
+      // Add to local chat
+      chatProvider.addMessage(ChatMessage.file(
+        id: _uuid.v4(),
+        deviceId: appService.deviceId,
+        deviceAlias: appService.deviceAlias,
+        fileName: file.name,
+        fileSize: file.size,
+        isFromMe: true,
+        filePath: file.path,
+        mimeType: isImage ? 'image/${file.extension}' : null,
+        isGroupMessage: isGroupChat,
+      ));
+      
+      _scrollToBottom();
+    } catch (e) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Failed to send file: $e')),
+      );
+    } finally {
+      setState(() => _isSendingFile = false);
+    }
+  }
+  
   void _sendMessage(
     BuildContext context,
     ChatProvider chatProvider,
@@ -627,7 +952,10 @@ class _ChatTabState extends State<ChatTab> {
       }
     }
     
-    // Scroll to bottom
+    _scrollToBottom();
+  }
+  
+  void _scrollToBottom() {
     Future.delayed(const Duration(milliseconds: 100), () {
       if (_scrollController.hasClients) {
         _scrollController.animateTo(
@@ -759,5 +1087,12 @@ class _ChatTabState extends State<ChatTab> {
     } else {
       return DateFormat('MMM d').format(time);
     }
+  }
+  
+  String _formatFileSize(int bytes) {
+    if (bytes < 1024) return '$bytes B';
+    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+    if (bytes < 1024 * 1024 * 1024) return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 }

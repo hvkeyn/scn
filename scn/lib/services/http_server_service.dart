@@ -88,6 +88,11 @@ class HttpServerService {
     _router.post('/api/chat', (Request request) async {
       return await _handleChatMessage(request);
     });
+    
+    // Chat file endpoint (direct file in chat)
+    _router.post('/api/chat-file', (Request request) async {
+      return await _handleChatFile(request);
+    });
   }
   
   Future<Response> _handleRegister(Request request) async {
@@ -337,6 +342,56 @@ class HttpServerService {
       return Response.ok(jsonEncode({'status': 'ok'}));
     } catch (e) {
       print('Error in chat message: $e');
+      return Response(500, body: jsonEncode({'error': e.toString()}));
+    }
+  }
+  
+  Future<Response> _handleChatFile(Request request) async {
+    try {
+      // Get file info from query params
+      final fileId = request.url.queryParameters['fileId'] ?? _uuid.v4();
+      final fileName = request.url.queryParameters['fileName'] ?? 'file';
+      final fileSizeStr = request.url.queryParameters['fileSize'] ?? '0';
+      final fileSize = int.tryParse(fileSizeStr) ?? 0;
+      final senderId = request.url.queryParameters['senderId'] ?? _uuid.v4();
+      final senderAlias = request.url.queryParameters['senderAlias'] ?? 'Unknown';
+      final isGroupMessage = request.url.queryParameters['isGroupMessage'] == 'true';
+      
+      print('📎 Received chat file: $fileName ($fileSize bytes) from $senderAlias');
+      
+      // Save file to downloads folder
+      final downloadDir = await FileService.getDefaultDownloadDirectory();
+      final savedPath = await FileService.saveFile(
+        destinationDirectory: downloadDir,
+        fileName: fileName,
+        stream: request.read(),
+      );
+      
+      print('   ✅ Saved to: $savedPath');
+      
+      // Determine if it's an image
+      final ext = fileName.split('.').last.toLowerCase();
+      final isImage = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp'].contains(ext);
+      
+      // Add message to chat
+      if (_chatProvider != null) {
+        _chatProvider!.addMessage(ChatMessage.file(
+          id: fileId,
+          deviceId: senderId,
+          deviceAlias: senderAlias,
+          fileName: fileName,
+          fileSize: fileSize,
+          isFromMe: false,
+          filePath: savedPath,
+          mimeType: isImage ? 'image/$ext' : null,
+          isGroupMessage: isGroupMessage,
+        ));
+        print('   ✅ Added to chat. Unread: ${_chatProvider!.totalUnreadCount}');
+      }
+      
+      return Response.ok(jsonEncode({'status': 'ok', 'path': savedPath}));
+    } catch (e) {
+      print('Error in chat file: $e');
       return Response(500, body: jsonEncode({'error': e.toString()}));
     }
   }

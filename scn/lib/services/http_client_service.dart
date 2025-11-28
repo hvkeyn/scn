@@ -211,6 +211,55 @@ class HttpClientService {
       return false;
     }
   }
+  
+  /// Send file through chat (direct upload with chat metadata)
+  Future<bool> sendFileWithChat({
+    required Device target,
+    required String filePath,
+    required FileInfo fileInfo,
+    required String senderId,
+    required String senderAlias,
+    bool isGroupMessage = false,
+  }) async {
+    try {
+      final file = File(filePath);
+      if (!await file.exists()) {
+        print('File not found: $filePath');
+        return false;
+      }
+      
+      final uri = Uri.parse('${target.url}/api/chat-file')
+          .replace(queryParameters: {
+        'fileId': fileInfo.id,
+        'fileName': fileInfo.fileName,
+        'fileSize': fileInfo.size.toString(),
+        'senderId': senderId,
+        'senderAlias': senderAlias,
+        'isGroupMessage': isGroupMessage.toString(),
+      });
+      
+      // Upload file
+      final request = http.StreamedRequest('POST', uri);
+      request.headers['Content-Type'] = 'application/octet-stream';
+      request.contentLength = fileInfo.size;
+      
+      final fileStream = file.openRead();
+      fileStream.listen(
+        (chunk) => request.sink.add(chunk),
+        onDone: () => request.sink.close(),
+        onError: (error) => request.sink.close(),
+      );
+      
+      final streamedResponse = await request.send().timeout(
+        const Duration(minutes: 10),
+      );
+      
+      return streamedResponse.statusCode == 200;
+    } catch (e) {
+      print('Failed to send chat file: $e');
+      return false;
+    }
+  }
 }
 
 class TimeoutException implements Exception {

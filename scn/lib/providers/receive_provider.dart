@@ -6,13 +6,16 @@ import 'package:scn/models/device.dart';
 class ReceiveProvider extends ChangeNotifier {
   ReceiveSession? _currentSession;
   final List<ReceiveSession> _history = [];
+  int _unviewedCount = 0;  // Counter for badge
   
   ReceiveSession? get currentSession => _currentSession;
   List<ReceiveSession> get history => List.unmodifiable(_history);
+  int get unviewedCount => _unviewedCount;
   
   void startSession(ReceiveSession session) {
     debugPrint('📥 ReceiveProvider.startSession: ${session.files.length} files from ${session.sender.alias}');
     _currentSession = session;
+    _unviewedCount++;  // Increment badge
     notifyListeners();
   }
   
@@ -62,6 +65,14 @@ class ReceiveProvider extends ChangeNotifier {
     notifyListeners();
   }
   
+  /// Mark all as viewed (reset badge)
+  void markAsViewed() {
+    if (_unviewedCount > 0) {
+      _unviewedCount = 0;
+      notifyListeners();
+    }
+  }
+  
   void cancelSession() {
     if (_currentSession == null) return;
     
@@ -78,4 +89,3 @@ class ReceiveProvider extends ChangeNotifier {
     finishSession();
   }
 }
-
