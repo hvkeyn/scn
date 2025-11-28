@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -10,13 +11,25 @@ import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/pages/home_page.dart';
 import 'package:scn/utils/process_manager.dart';
+import 'package:scn/utils/test_config.dart';
 
-void main() async {
+void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
   
-  // Kill other instances of scn.exe before starting
-  // Uses process creation time to identify and keep the newest (current) process
-  if (defaultTargetPlatform == TargetPlatform.windows) {
+  // Initialize test config from command line args
+  TestConfig.init(args);
+  final testConfig = TestConfig.current;
+  
+  if (testConfig.isTestMode) {
+    debugPrint('╔══════════════════════════════════════╗');
+    debugPrint('║  TEST MODE - Instance #${testConfig.instanceNumber + 1}              ║');
+    debugPrint('║  HTTP Port: ${testConfig.httpPort}                   ║');
+    debugPrint('║  Mesh Port: ${testConfig.meshPort}                   ║');
+    debugPrint('╚══════════════════════════════════════╝');
+  }
+  
+  // Kill other instances only in normal mode (not test mode)
+  if (!testConfig.isTestMode && defaultTargetPlatform == TargetPlatform.windows) {
     try {
       final killedCount = await ProcessManager.killOtherInstances();
       if (killedCount > 0) {
@@ -45,13 +58,21 @@ void main() async {
   );
   
   // Load device alias (or generate if first run)
+  // Test instances automatically get suffix and separate storage
   await appService.loadDeviceAlias();
+  
+  // Set chat provider info
+  chatProvider.setMyInfo(
+    deviceId: appService.deviceId,
+    alias: appService.deviceAlias,
+  );
   
   // Load saved remote peers
   await remotePeerProvider.load();
   
   try {
-    await appService.initialize();
+    // Pass test config port to initialize
+    await appService.initialize(port: testConfig.httpPort);
   } catch (e) {
     // If initialization fails, still run the app but show error
     debugPrint('Warning: Failed to initialize services: $e');
@@ -91,17 +112,11 @@ class SCNApp extends StatelessWidget {
           backgroundColor: Color(0xFF1a1a2e),
           foregroundColor: Colors.white,
         ),
-        cardTheme: CardThemeData(
-          color: const Color(0xFF1a1a2e),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
+        cardTheme: const CardTheme(
+          color: Color(0xFF1a1a2e),
         ),
-        dialogTheme: DialogThemeData(
-          backgroundColor: const Color(0xFF1a1a2e),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
+        dialogTheme: const DialogTheme(
+          backgroundColor: Color(0xFF1a1a2e),
         ),
       ),
       darkTheme: ThemeData(
@@ -115,17 +130,11 @@ class SCNApp extends StatelessWidget {
           backgroundColor: Color(0xFF1a1a2e),
           foregroundColor: Colors.white,
         ),
-        cardTheme: CardThemeData(
-          color: const Color(0xFF1a1a2e),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(12),
-          ),
+        cardTheme: const CardTheme(
+          color: Color(0xFF1a1a2e),
         ),
-        dialogTheme: DialogThemeData(
-          backgroundColor: const Color(0xFF1a1a2e),
-          shape: RoundedRectangleBorder(
-            borderRadius: BorderRadius.circular(16),
-          ),
+        dialogTheme: const DialogTheme(
+          backgroundColor: Color(0xFF1a1a2e),
         ),
       ),
       themeMode: ThemeMode.dark,

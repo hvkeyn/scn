@@ -11,6 +11,7 @@ class ReceiveProvider extends ChangeNotifier {
   List<ReceiveSession> get history => List.unmodifiable(_history);
   
   void startSession(ReceiveSession session) {
+    debugPrint('📥 ReceiveProvider.startSession: ${session.files.length} files from ${session.sender.alias}');
     _currentSession = session;
     notifyListeners();
   }
@@ -20,6 +21,8 @@ class ReceiveProvider extends ChangeNotifier {
     
     final file = _currentSession!.files[fileId];
     if (file == null) return;
+    
+    debugPrint('📥 ReceiveProvider.updateFileStatus: $fileId -> $status');
     
     final updatedFiles = Map<String, ReceivingFile>.from(_currentSession!.files);
     updatedFiles[fileId] = file.copyWith(
@@ -41,9 +44,20 @@ class ReceiveProvider extends ChangeNotifier {
   }
   
   void finishSession() {
-    if (_currentSession == null) return;
+    if (_currentSession == null) {
+      debugPrint('📥 ReceiveProvider.finishSession: No current session!');
+      return;
+    }
+    
+    debugPrint('📥 ReceiveProvider.finishSession: Saving to history');
+    debugPrint('   Files: ${_currentSession!.files.length}');
+    for (final f in _currentSession!.files.values) {
+      debugPrint('   - ${f.file.fileName}: ${f.status} -> ${f.savedPath}');
+    }
     
     _history.insert(0, _currentSession!);
+    debugPrint('   History now has ${_history.length} sessions');
+    
     _currentSession = null;
     notifyListeners();
   }

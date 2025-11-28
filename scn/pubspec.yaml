@@ -1,11 +1,11 @@
 name: scn
 description: SCN - Secure Connection Network (Dart-only version)
-version: 1.0.0+13
+version: 1.0.0+50
 publish_to: none
 
 environment:
-  sdk: ^3.9.0
-  flutter: ^3.25.0
+  sdk: ^3.5.0
+  flutter: ^3.24.0
 
 dependencies:
   flutter:
@@ -13,10 +13,10 @@ dependencies:
   flutter_localizations:
     sdk: flutter
 
-  # HTTP Server & Client (replaces Rust HTTP)
-  shelf: ^1.4.2
+  # HTTP Server & Client
+  shelf: ^1.4.1
   shelf_router: ^1.1.4
-  http: ^1.2.2
+  http: ^1.2.0
   
   # Network discovery (replaces Rust mDNS)
   multicast_dns: ^0.3.2+3
@@ -28,8 +28,8 @@ dependencies:
   path_provider: ^2.1.5
   file_picker: ^8.1.4
   
-  # UI
-  intl: ^0.20.2
+  # UI (intl version pinned by flutter_localizations)
+  intl: ^0.19.0
   
   # Crypto (replaces Rust crypto)
   crypto: ^3.0.5

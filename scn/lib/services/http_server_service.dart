@@ -25,6 +25,8 @@ class HttpServerService {
   ChatProvider? _chatProvider;
   String _deviceAlias = 'SCN Device';
   String _deviceVersion = '1.0.0';
+  String _deviceFingerprint = '';  // Постоянный fingerprint
+  String _deviceId = '';
   
   HttpServerService() {
     _setupRoutes();
@@ -38,9 +40,11 @@ class HttpServerService {
     _chatProvider = chatProvider;
   }
   
-  void setDeviceInfo({String? alias, String? version}) {
+  void setDeviceInfo({String? alias, String? version, String? fingerprint, String? deviceId}) {
     if (alias != null) _deviceAlias = alias;
     if (version != null) _deviceVersion = version;
+    if (fingerprint != null) _deviceFingerprint = fingerprint;
+    if (deviceId != null) _deviceId = deviceId;
   }
   
   void _setupRoutes() {
@@ -52,7 +56,9 @@ class HttpServerService {
           'version': _deviceVersion,
           'deviceModel': Platform.operatingSystem,
           'deviceType': 'desktop',
-          'fingerprint': 'scn-device-${_uuid.v4()}',
+          'deviceId': _deviceId,
+          'fingerprint': _deviceFingerprint.isNotEmpty ? _deviceFingerprint : _uuid.v4(),
+          'port': _port,
         }),
         headers: {'Content-Type': 'application/json'},
       );
@@ -271,8 +277,8 @@ class HttpServerService {
         destinationDirectory: session.destinationDirectory,
       ));
       
-      // Check if all files are finished
-      final allFinished = session.files.values.every(
+      // Check if all files are finished (use updatedFiles, not old session.files)
+      final allFinished = updatedFiles.values.every(
         (f) => f.status == FileStatus.finished || f.status == FileStatus.failed,
       );
       
@@ -297,26 +303,36 @@ class HttpServerService {
       final body = await request.readAsString();
       final data = jsonDecode(body) as Map<String, dynamic>;
       final message = data['message'] as String?;
+      final isGroupMessage = data['isGroupMessage'] as bool? ?? false;
       
       if (message == null || message.isEmpty) {
         return Response(400, body: jsonEncode({'error': 'Message is required'}));
       }
       
-      // Get sender info from headers or request
-      final senderId = request.headers['x-device-id'] ?? _uuid.v4();
-      final senderAlias = request.headers['x-device-alias'] ?? 'Unknown';
+      // Get sender info from body
+      final senderId = data['senderId'] as String? ?? _uuid.v4();
+      final senderAlias = data['senderAlias'] as String? ?? 'Unknown';
       
-      // Add message to chat provider
-      _chatProvider?.addMessage(
-        ChatMessage(
-          id: _uuid.v4(),
-          deviceId: senderId,
-          deviceAlias: senderAlias,
-          message: message,
-          timestamp: DateTime.now(),
-          isFromMe: false,
-        ),
-      );
+      print('📨 Received chat message from $senderAlias: $message');
+      print('   ChatProvider available: ${_chatProvider != null}');
+      
+      if (_chatProvider != null) {
+        // Add message to chat provider
+        _chatProvider!.addMessage(
+          ChatMessage(
+            id: _uuid.v4(),
+            deviceId: senderId,
+            deviceAlias: senderAlias,
+            message: message,
+            timestamp: DateTime.now(),
+            isFromMe: false,
+            isGroupMessage: isGroupMessage,
+          ),
+        );
+        print('   ✅ Message added. Total unread: ${_chatProvider!.totalUnreadCount}');
+      } else {
+        print('   ❌ ChatProvider is null!');
+      }
       
       return Response.ok(jsonEncode({'status': 'ok'}));
     } catch (e) {

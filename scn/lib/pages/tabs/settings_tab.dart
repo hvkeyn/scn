@@ -2,7 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:scn/services/app_service.dart';
 import 'package:scn/providers/remote_peer_provider.dart';
+import 'package:scn/models/remote_peer.dart';
 import 'package:scn/widgets/scn_logo.dart';
+import 'package:scn/utils/test_config.dart';
 
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
@@ -23,13 +25,13 @@ class SettingsTab extends StatelessWidget {
           child: ListTile(
             leading: const SCNLogo(size: 40),
             title: const Text('About', style: TextStyle(color: Colors.white)),
-            subtitle: Text('SCN 1.0.0+13', style: TextStyle(color: Colors.white.withOpacity(0.5))),
+            subtitle: Text('SCN 1.0.0+18', style: TextStyle(color: Colors.white.withOpacity(0.5))),
             onTap: () {
               showAboutDialog(
                 context: context,
                 applicationIcon: const SCNLogo(size: 64),
                 applicationName: 'SCN',
-                applicationVersion: '1.0.0+13',
+                applicationVersion: '1.0.0+18',
                 applicationLegalese: '© 2025 SCN Team',
               );
             },
@@ -290,8 +292,263 @@ class SettingsTab extends StatelessWidget {
           ),
         ),
         
+        const SizedBox(height: 16),
+        _buildSectionTitle(context, 'Test Mode'),
+        
+        // Test Mode - Launch and manage test instances
+        _buildCard(
+          context,
+          child: Column(
+            children: [
+              // Header with status
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: TestConfig.current.isTestMode 
+                        ? Colors.orange.withOpacity(0.2)
+                        : Colors.amber.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Icon(
+                    TestConfig.current.isTestMode ? Icons.bug_report : Icons.science,
+                    color: TestConfig.current.isTestMode ? Colors.orange : Colors.amber,
+                  ),
+                ),
+                title: Text(
+                  TestConfig.current.isTestMode 
+                      ? 'TEST INSTANCE #${TestConfig.current.instanceNumber}'
+                      : 'Local Testing',
+                  style: TextStyle(
+                    color: TestConfig.current.isTestMode ? Colors.orange : Colors.white,
+                    fontWeight: TestConfig.current.isTestMode ? FontWeight.bold : FontWeight.normal,
+                  ),
+                ),
+                subtitle: Text(
+                  TestConfig.current.isTestMode 
+                      ? 'Port: ${TestConfig.current.httpPort} • Separate storage'
+                      : 'Launch test instances to simulate remote devices',
+                  style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                ),
+              ),
+              
+              Divider(color: Colors.white.withOpacity(0.1)),
+              
+              // Main action: Launch or Exit
+              if (TestConfig.current.isTestMode) ...[
+                // Exit test mode button
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _exitTestMode(context),
+                      icon: const Icon(Icons.exit_to_app),
+                      label: const Text('Exit Test Mode'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.red.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ),
+                // Info about this test instance
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.orange.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.orange.withOpacity(0.3)),
+                    ),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            const Icon(Icons.info_outline, color: Colors.orange, size: 18),
+                            const SizedBox(width: 8),
+                            Text(
+                              'Test Instance Info',
+                              style: TextStyle(color: Colors.orange.shade200, fontWeight: FontWeight.bold),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          '• This is a separate instance with its own data\n'
+                          '• Changes here won\'t affect main app\n'
+                          '• HTTP Port: ${TestConfig.current.httpPort}\n'
+                          '• Mesh Port: ${TestConfig.current.meshPort}',
+                          style: TextStyle(color: Colors.orange.shade200, fontSize: 11, height: 1.5),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ] else ...[
+                // Launch test instance button
+                Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: SizedBox(
+                    width: double.infinity,
+                    child: ElevatedButton.icon(
+                      onPressed: () => _launchTestInstance(context),
+                      icon: const Icon(Icons.add_circle_outline),
+                      label: const Text('Launch Test Instance'),
+                      style: ElevatedButton.styleFrom(
+                        backgroundColor: Colors.amber.shade700,
+                        foregroundColor: Colors.white,
+                        padding: const EdgeInsets.symmetric(vertical: 12),
+                      ),
+                    ),
+                  ),
+                ),
+                // Quick connect to existing instances
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Connect to running instances:',
+                        style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 12),
+                      ),
+                    ],
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 8, 16, 16),
+                  child: Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [1, 2, 3, 4].map((instanceNum) {
+                      final port = TestConfig.basePort + (instanceNum * 10);
+                      return OutlinedButton.icon(
+                        onPressed: () => _connectToLocalInstance(context, peerProvider, port, instanceNum),
+                        icon: const Icon(Icons.link, size: 16),
+                        label: Text('#$instanceNum'),
+                        style: OutlinedButton.styleFrom(
+                          foregroundColor: Colors.amber,
+                          side: BorderSide(color: Colors.amber.withOpacity(0.3)),
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+                ),
+                // Info
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                  child: Container(
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: Colors.amber.withOpacity(0.1),
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: Colors.amber.withOpacity(0.3)),
+                    ),
+                    child: Row(
+                      children: [
+                        const Icon(Icons.lightbulb_outline, color: Colors.amber, size: 18),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            'Test instances simulate remote devices on localhost with separate data storage',
+                            style: TextStyle(color: Colors.amber.shade200, fontSize: 11),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+        
         const SizedBox(height: 32),
       ],
+    );
+  }
+  
+  void _launchTestInstance(BuildContext context) async {
+    final instanceNum = await TestConfig.findNextAvailableInstance();
+    
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Launching Test Instance #$instanceNum...'),
+        backgroundColor: Colors.amber.shade700,
+      ),
+    );
+    
+    final success = await TestConfig.launchTestInstance(instanceNum);
+    
+    if (context.mounted) {
+      if (success) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Test Instance #$instanceNum launched! Port: ${TestConfig.basePort + (instanceNum * 10)}'),
+            backgroundColor: Colors.green.shade700,
+            duration: const Duration(seconds: 3),
+          ),
+        );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text('Failed to launch test instance'),
+            backgroundColor: Colors.red.shade700,
+          ),
+        );
+      }
+    }
+  }
+  
+  void _exitTestMode(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Exit Test Mode?', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'This will close Test Instance #${TestConfig.current.instanceNumber}.\n\n'
+          'The main application and other instances will continue running.',
+          style: TextStyle(color: Colors.white.withOpacity(0.7)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('Cancel', style: TextStyle(color: Colors.white.withOpacity(0.7))),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              Navigator.of(context).pop();
+              TestConfig.exitTestInstance();
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
+            child: const Text('Exit'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _connectToLocalInstance(BuildContext context, RemotePeerProvider peerProvider, int port, int instanceNum) {
+    final peer = RemotePeer(
+      id: 'local-test-$port',
+      alias: 'Test Instance #$instanceNum',
+      address: '127.0.0.1',
+      port: port,
+      type: PeerType.local,
+      status: PeerStatus.connecting,
+    );
+    peerProvider.addPeer(peer);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('Connecting to Test Instance #$instanceNum (port $port)...'),
+        backgroundColor: Colors.amber.shade700,
+      ),
     );
   }
   

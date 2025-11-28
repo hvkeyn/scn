@@ -64,6 +64,8 @@ class SendingFile {
   final String? localPath;
   final List<int>? bytes;
   final String? errorMessage;
+  final double progress;  // 0.0 to 1.0
+  final int bytesSent;
   
   SendingFile({
     required this.file,
@@ -72,6 +74,8 @@ class SendingFile {
     this.localPath,
     this.bytes,
     this.errorMessage,
+    this.progress = 0.0,
+    this.bytesSent = 0,
   });
   
   SendingFile copyWith({
@@ -82,6 +86,8 @@ class SendingFile {
     String? Function()? localPathFn,
     List<int>? bytes,
     String? errorMessage,
+    double? progress,
+    int? bytesSent,
   }) => SendingFile(
     file: file ?? this.file,
     status: status ?? this.status,
@@ -89,6 +95,8 @@ class SendingFile {
     localPath: localPath ?? (localPathFn != null ? localPathFn() : this.localPath),
     bytes: bytes ?? this.bytes,
     errorMessage: errorMessage ?? this.errorMessage,
+    progress: progress ?? this.progress,
+    bytesSent: bytesSent ?? this.bytesSent,
   );
 }
 

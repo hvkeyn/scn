@@ -1,12 +1,29 @@
-.idea
+# Flutter SDK (auto-downloaded by build scripts)
+flutter-sdk/
+submodules/
 
-# Linux AppImage
-/app/AppDir
-/app/appimage-build
+# Build outputs
+releases/
+scn/build/
+*.exe
+*.dll
 
-.refena_inspector/
+# IDE
+.idea/
+*.iml
+.vscode/
 
-/secrets
+# OS files
+.DS_Store
+Thumbs.db
 
-# FVM Version Cache
-.fvm/
+# Dart/Flutter
+.dart_tool/
+.packages
+*.log
+
+# Memory bank (local notes)
+memory-bank/
+
+# Test artifacts
+*.tmp

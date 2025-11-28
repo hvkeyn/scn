@@ -50,6 +50,7 @@ class SendProvider extends ChangeNotifier {
     updatedFiles[fileId] = file.copyWith(
       status: status,
       errorMessage: errorMessage,
+      progress: status == FileStatus.finished ? 1.0 : file.progress,
     );
     
     _currentSession = SendSession(
@@ -62,6 +63,51 @@ class SendProvider extends ChangeNotifier {
     );
     
     notifyListeners();
+  }
+  
+  void updateFileProgress(String fileId, double progress, int bytesSent) {
+    if (_currentSession == null) return;
+    
+    final file = _currentSession!.files[fileId];
+    if (file == null) return;
+    
+    final updatedFiles = Map<String, SendingFile>.from(_currentSession!.files);
+    updatedFiles[fileId] = file.copyWith(
+      progress: progress,
+      bytesSent: bytesSent,
+    );
+    
+    _currentSession = SendSession(
+      sessionId: _currentSession!.sessionId,
+      target: _currentSession!.target,
+      files: updatedFiles,
+      status: _currentSession!.status,
+      startTime: _currentSession!.startTime,
+      endTime: _currentSession!.endTime,
+    );
+    
+    notifyListeners();
+  }
+  
+  /// Get overall transfer progress (0.0 to 1.0)
+  double get overallProgress {
+    if (_currentSession == null) return 0.0;
+    
+    int totalSize = 0;
+    int totalSent = 0;
+    
+    for (final file in _currentSession!.files.values) {
+      totalSize += file.file.size;
+      totalSent += file.bytesSent;
+    }
+    
+    return totalSize > 0 ? totalSent / totalSize : 0.0;
+  }
+  
+  /// Get count of files by status
+  int countFilesByStatus(FileStatus status) {
+    if (_currentSession == null) return 0;
+    return _currentSession!.files.values.where((f) => f.status == status).length;
   }
   
   void finishSession() {

@@ -1,5 +1,4 @@
 import 'package:flutter/foundation.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 import 'package:scn/services/http_server_service.dart';
 import 'package:scn/services/discovery_service.dart';
 import 'package:scn/services/mesh_network_service.dart';
@@ -8,6 +7,8 @@ import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/device_provider.dart';
 import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/utils/device_name_generator.dart';
+import 'package:scn/utils/test_storage.dart';
+import 'package:scn/utils/test_config.dart';
 import 'package:scn/models/device_visibility.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
@@ -34,6 +35,7 @@ class AppService extends ChangeNotifier {
   int get port => _httpServer.port;
   String get deviceAlias => _deviceAlias;
   String get deviceFingerprint => _deviceFingerprint;
+  String get deviceId => _deviceFingerprint; // deviceId is same as fingerprint
   DeviceVisibility get deviceVisibility => _deviceVisibility;
   MeshNetworkService? get meshService => _running ? _meshNetwork : null;
   
@@ -64,7 +66,12 @@ class AppService extends ChangeNotifier {
       fingerprint: _deviceFingerprint,
       serverRunning: _running,
     );
-    _httpServer.setDeviceInfo(alias: _deviceAlias);
+    _httpServer.setDeviceInfo(
+      alias: _deviceAlias,
+      version: '1.0.0',
+      fingerprint: _deviceFingerprint,
+      deviceId: _deviceFingerprint,
+    );
     _meshNetwork.setDeviceInfo(
       deviceId: _deviceFingerprint,
       alias: _deviceAlias,
@@ -72,35 +79,39 @@ class AppService extends ChangeNotifier {
     );
   }
   
-  /// Load device alias and fingerprint from SharedPreferences
+  /// Load device alias and fingerprint from storage (with test instance prefix if in test mode)
   Future<void> loadDeviceAlias() async {
     try {
-      final prefs = await SharedPreferences.getInstance();
-      
       // Load alias
-      final savedAlias = prefs.getString(_deviceAliasKey);
+      final savedAlias = await TestStorage.getString(_deviceAliasKey);
       if (savedAlias != null && savedAlias.isNotEmpty) {
         _deviceAlias = savedAlias;
       } else {
+        // Generate new name for this instance
         _deviceAlias = DeviceNameGenerator.generateUnique();
-        await prefs.setString(_deviceAliasKey, _deviceAlias);
+        await TestStorage.setString(_deviceAliasKey, _deviceAlias);
         debugPrint('Generated new device name: $_deviceAlias');
       }
       
       // Load or generate fingerprint
-      final savedFingerprint = prefs.getString(_deviceFingerprintKey);
+      final savedFingerprint = await TestStorage.getString(_deviceFingerprintKey);
       if (savedFingerprint != null && savedFingerprint.isNotEmpty) {
         _deviceFingerprint = savedFingerprint;
       } else {
         _deviceFingerprint = _generateFingerprint();
-        await prefs.setString(_deviceFingerprintKey, _deviceFingerprint);
+        await TestStorage.setString(_deviceFingerprintKey, _deviceFingerprint);
         debugPrint('Generated new device fingerprint: $_deviceFingerprint');
       }
       
       // Load visibility
-      final savedVisibility = prefs.getInt(_deviceVisibilityKey);
+      final savedVisibility = await TestStorage.getInt(_deviceVisibilityKey);
       if (savedVisibility != null && savedVisibility < DeviceVisibility.values.length) {
         _deviceVisibility = DeviceVisibility.values[savedVisibility];
+      }
+      
+      // Add test instance suffix to alias display
+      if (TestConfig.current.isTestMode) {
+        _deviceAlias = '$_deviceAlias${TestConfig.current.instanceSuffix}';
       }
       
       _updateDeviceInfo();
@@ -109,6 +120,9 @@ class AppService extends ChangeNotifier {
       debugPrint('Error loading device settings: $e');
       _deviceAlias = DeviceNameGenerator.generateUnique();
       _deviceFingerprint = _generateFingerprint();
+      if (TestConfig.current.isTestMode) {
+        _deviceAlias = '$_deviceAlias${TestConfig.current.instanceSuffix}';
+      }
       _updateDeviceInfo();
       notifyListeners();
     }
@@ -122,32 +136,41 @@ class AppService extends ChangeNotifier {
     return hash.toString().substring(0, 16);
   }
   
-  /// Set device alias and save to SharedPreferences
+  /// Set device alias and save to storage
   Future<void> setDeviceAlias(String alias) async {
     if (alias.trim().isEmpty) {
       return;
     }
     
-    _deviceAlias = alias.trim();
+    // Remove test suffix if present before saving
+    var cleanAlias = alias.trim();
+    if (TestConfig.current.isTestMode) {
+      cleanAlias = cleanAlias.replaceAll(TestConfig.current.instanceSuffix, '');
+    }
+    
+    _deviceAlias = cleanAlias;
     
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setString(_deviceAliasKey, _deviceAlias);
+      await TestStorage.setString(_deviceAliasKey, cleanAlias);
     } catch (e) {
       debugPrint('Error saving device alias: $e');
+    }
+    
+    // Re-add suffix for display
+    if (TestConfig.current.isTestMode) {
+      _deviceAlias = '$cleanAlias${TestConfig.current.instanceSuffix}';
     }
     
     _updateDeviceInfo();
     notifyListeners();
   }
   
-  /// Set device visibility and save to SharedPreferences
+  /// Set device visibility and save to storage
   Future<void> setDeviceVisibility(DeviceVisibility visibility) async {
     _deviceVisibility = visibility;
     
     try {
-      final prefs = await SharedPreferences.getInstance();
-      await prefs.setInt(_deviceVisibilityKey, visibility.index);
+      await TestStorage.setInt(_deviceVisibilityKey, visibility.index);
     } catch (e) {
       debugPrint('Error saving device visibility: $e');
     }
@@ -156,7 +179,7 @@ class AppService extends ChangeNotifier {
     notifyListeners();
   }
   
-  Future<void> initialize() async {
+  Future<void> initialize({int? port}) async {
     if (_running) return;
     
     try {
@@ -174,8 +197,8 @@ class AppService extends ChangeNotifier {
       // Load remote peers if provider is set
       await _peerProvider?.load();
       
-      // Start HTTP server
-      await _httpServer.start();
+      // Start HTTP server (use provided port if in test mode)
+      await _httpServer.start(port: port);
       
       // Start device discovery
       await _discovery.start();

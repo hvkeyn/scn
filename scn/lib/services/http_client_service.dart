@@ -12,14 +12,15 @@ class HttpClientService {
       final response = await http.get(
         Uri.parse('${device.url}/api/info'),
         headers: {'Content-Type': 'application/json'},
-      ).timeout(const Duration(seconds: 5));
+      ).timeout(const Duration(seconds: 3));
       
       if (response.statusCode == 200) {
         return jsonDecode(response.body) as Map<String, dynamic>;
       }
+      print('getDeviceInfo: status ${response.statusCode}');
       return null;
     } catch (e) {
-      print('Failed to get device info: $e');
+      print('Failed to get device info from ${device.url}: $e');
       return null;
     }
   }
@@ -161,14 +162,26 @@ class HttpClientService {
     }
   }
   
+  String _myDeviceId = '';
+  String _myAlias = '';
+  
+  void setMyInfo({required String deviceId, required String alias}) {
+    _myDeviceId = deviceId;
+    _myAlias = alias;
+  }
+  
   Future<bool> sendMessage({
     required Device device,
     required String message,
+    bool isGroupMessage = false,
   }) async {
     try {
       final requestBody = {
         'message': message,
         'type': 'text',
+        'isGroupMessage': isGroupMessage,
+        'senderId': _myDeviceId,
+        'senderAlias': _myAlias,
       };
       
       final response = await http.post(

@@ -2,6 +2,8 @@ import 'dart:convert';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:scn/models/remote_peer.dart';
+import 'package:scn/services/http_client_service.dart';
+import 'package:scn/models/device.dart';
 
 /// Provider for managing remote peers state
 class RemotePeerProvider extends ChangeNotifier {
@@ -93,6 +95,106 @@ class RemotePeerProvider extends ChangeNotifier {
     }
     notifyListeners();
     _save();
+    
+    // Auto-connect if status is connecting
+    if (peer.status == PeerStatus.connecting) {
+      connectToPeer(peer.id);
+    }
+  }
+  
+  /// Connect to a peer - verify they are reachable
+  Future<bool> connectToPeer(String peerId) async {
+    int index = _peers.indexWhere((p) => p.id == peerId);
+    if (index < 0) return false;
+    
+    final peer = _peers[index];
+    
+    // Update status to connecting
+    _peers[index] = peer.copyWith(status: PeerStatus.connecting);
+    notifyListeners();
+    
+    try {
+      final httpClient = HttpClientService();
+      final device = Device(
+        id: peer.id,
+        alias: peer.alias,
+        ip: peer.address,
+        port: peer.port,
+        type: DeviceType.desktop,
+      );
+      
+      // Try to get device info with timeout
+      Map<String, dynamic>? info;
+      try {
+        info = await httpClient.getDeviceInfo(device).timeout(
+          const Duration(seconds: 5),
+          onTimeout: () => null,
+        );
+      } catch (e) {
+        debugPrint('Connection timeout or error: $e');
+        info = null;
+      }
+      
+      // Re-find index after await (list might have changed)
+      index = _peers.indexWhere((p) => p.id == peerId);
+      if (index < 0) {
+        debugPrint('Peer was removed during connection attempt');
+        return false;
+      }
+      
+      if (info != null) {
+        // Connected successfully!
+        _peers[index] = _peers[index].copyWith(
+          status: PeerStatus.connected,
+          alias: info['alias'] as String? ?? peer.alias,
+          fingerprint: info['fingerprint'] as String?,
+          lastSeen: DateTime.now(),
+          errorMessage: null,
+        );
+        notifyListeners();
+        _save();
+        debugPrint('Connected to peer: ${peer.alias} at ${peer.address}:${peer.port}');
+        return true;
+      } else {
+        // Failed to connect - timeout or no response
+        _peers[index] = _peers[index].copyWith(
+          status: PeerStatus.error,
+          errorMessage: 'Connection timeout - device not reachable',
+        );
+        notifyListeners();
+        debugPrint('Failed to connect to peer: ${peer.alias} (timeout)');
+        return false;
+      }
+    } catch (e) {
+      // Re-find index after error
+      index = _peers.indexWhere((p) => p.id == peerId);
+      if (index >= 0) {
+        _peers[index] = _peers[index].copyWith(
+          status: PeerStatus.error,
+          errorMessage: 'Error: ${e.toString().substring(0, e.toString().length.clamp(0, 50))}',
+        );
+        notifyListeners();
+      }
+      debugPrint('Error connecting to peer: $e');
+      return false;
+    }
+  }
+  
+  /// Retry connection to a peer
+  Future<bool> retryConnection(String peerId) async {
+    return connectToPeer(peerId);
+  }
+  
+  /// Disconnect from a peer
+  void disconnectPeer(String peerId) {
+    final index = _peers.indexWhere((p) => p.id == peerId);
+    if (index >= 0) {
+      _peers[index] = _peers[index].copyWith(
+        status: PeerStatus.disconnected,
+        errorMessage: null,
+      );
+      notifyListeners();
+    }
   }
   
   /// Update peer status

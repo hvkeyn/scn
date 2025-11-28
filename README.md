@@ -292,7 +292,7 @@ We welcome contributions to the project! If you want to help:
 
 ## Version
 
-Current version: **1.0.0+13**
+Current version: **1.0.0+16**
 
 ## Contacts
 

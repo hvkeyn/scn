@@ -9,6 +9,7 @@ import 'package:scn/models/session.dart';
 import 'package:scn/models/file_info.dart';
 import 'package:scn/models/device_visibility.dart';
 import 'package:scn/models/remote_peer.dart';
+import 'package:scn/models/device.dart';
 import 'package:scn/widgets/scn_logo.dart';
 import 'package:scn/widgets/add_peer_dialog.dart';
 import 'package:scn/widgets/invitation_card.dart';
@@ -136,6 +137,30 @@ class _ReceiveTabState extends State<ReceiveTab> {
                 ),
               ),
             ],
+            
+            // Local Network Devices (from discovery)
+            Consumer<DeviceProvider>(
+              builder: (context, deviceProvider, _) {
+                final localDevices = deviceProvider.devices;
+                if (localDevices.isEmpty) return const SliverToBoxAdapter(child: SizedBox.shrink());
+                
+                return SliverToBoxAdapter(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      _buildSectionHeader(
+                        context, 
+                        'Local Network',
+                        Icons.wifi,
+                        badgeCount: localDevices.length,
+                        badgeColor: Colors.blue,
+                      ),
+                      ...localDevices.map((device) => _buildLocalDeviceTile(context, device)),
+                    ],
+                  ),
+                );
+              },
+            ),
             
             // All Saved Peers
             if (allPeers.isNotEmpty) ...[
@@ -475,6 +500,49 @@ class _ReceiveTabState extends State<ReceiveTab> {
           ),
         ),
       ],
+    );
+  }
+
+  Widget _buildLocalDeviceTile(BuildContext context, Device device) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Card(
+        color: Colors.white.withOpacity(0.05),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+        child: ListTile(
+          leading: Container(
+            width: 42,
+            height: 42,
+            decoration: BoxDecoration(
+              color: Colors.blue.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              device.type == DeviceType.mobile ? Icons.phone_android : Icons.computer,
+              color: Colors.blue,
+            ),
+          ),
+          title: Text(
+            device.alias,
+            style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500),
+          ),
+          subtitle: Text(
+            '${device.ip}:${device.port}',
+            style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+          ),
+          trailing: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+            decoration: BoxDecoration(
+              color: Colors.green.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: const Text(
+              'Local',
+              style: TextStyle(color: Colors.green, fontSize: 11),
+            ),
+          ),
+        ),
+      ),
     );
   }
 
