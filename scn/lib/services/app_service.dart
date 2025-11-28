@@ -200,7 +200,13 @@ class AppService extends ChangeNotifier {
       // Start HTTP server (use provided port if in test mode)
       await _httpServer.start(port: port);
       
-      // Start device discovery
+      _initialized = true;
+      _running = true;
+      
+      // Update device info AFTER HTTP server started (so port is correct)
+      _updateDeviceInfo();
+      
+      // Start device discovery AFTER device info is updated
       await _discovery.start();
       
       // Start mesh network service
@@ -213,9 +219,6 @@ class AppService extends ChangeNotifier {
         debugPrint('Mesh network failed to start (non-fatal): $e');
       }
       
-      _initialized = true;
-      _running = true;
-      _updateDeviceInfo();
       notifyListeners();
     } catch (e) {
       debugPrint('Failed to initialize app: $e');

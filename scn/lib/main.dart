@@ -12,9 +12,13 @@ import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/pages/home_page.dart';
 import 'package:scn/utils/process_manager.dart';
 import 'package:scn/utils/test_config.dart';
+import 'package:scn/utils/logger.dart';
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
+  
+  // Initialize file logger
+  await AppLogger.init();
   
   // Initialize test config from command line args
   TestConfig.init(args);
@@ -61,11 +65,17 @@ void main(List<String> args) async {
   // Test instances automatically get suffix and separate storage
   await appService.loadDeviceAlias();
   
-  // Set chat provider info
-  chatProvider.setMyInfo(
-    deviceId: appService.deviceId,
-    alias: appService.deviceAlias,
-  );
+  // Set device ID for all providers (enables per-device storage)
+  final deviceId = appService.deviceId;
+  final deviceAlias = appService.deviceAlias;
+  
+  // Set device ID for logger to distinguish processes
+  AppLogger.setDeviceId(deviceId);
+  AppLogger.log('Device alias: $deviceAlias');
+  
+  chatProvider.setMyInfo(deviceId: deviceId, alias: deviceAlias);
+  receiveProvider.setMyDeviceId(deviceId);
+  sendProvider.setMyDeviceId(deviceId);
   
   // Load saved remote peers
   await remotePeerProvider.load();

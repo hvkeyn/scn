@@ -120,7 +120,8 @@ class DiscoveryService {
       }
       
       final ip = datagram.address.address;
-      final device = dto.toDevice(ip, _devicePort, false);
+      // Use port from announcement, not our own port!
+      final device = dto.toDevice(ip, dto.port ?? _devicePort, false);
       
       // Add or update device
       _deviceProvider?.addDevice(device);

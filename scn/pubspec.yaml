@@ -1,6 +1,6 @@
 name: scn
 description: SCN - Secure Connection Network (Dart-only version)
-version: 1.0.0+55
+version: 1.0.0+71
 publish_to: none
 
 environment:

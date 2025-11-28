@@ -2,6 +2,9 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:scn/services/app_service.dart';
 import 'package:scn/providers/remote_peer_provider.dart';
+import 'package:scn/providers/chat_provider.dart';
+import 'package:scn/providers/receive_provider.dart';
+import 'package:scn/providers/send_provider.dart';
 import 'package:scn/models/remote_peer.dart';
 import 'package:scn/widgets/scn_logo.dart';
 import 'package:scn/utils/test_config.dart';
@@ -289,6 +292,97 @@ class SettingsTab extends StatelessWidget {
                 ),
               ],
             ),
+          ),
+        ),
+        
+        const SizedBox(height: 16),
+        _buildSectionTitle(context, 'History'),
+        
+        // History - Clear chat and file history
+        _buildCard(
+          context,
+          child: Column(
+            children: [
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.history, color: Colors.blue),
+                ),
+                title: const Text('Chat History', style: TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  'Clear all messages',
+                  style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                ),
+                trailing: TextButton(
+                  onPressed: () => _confirmClearChatHistory(context),
+                  child: const Text('Clear', style: TextStyle(color: Colors.red)),
+                ),
+              ),
+              const Divider(height: 1, color: Colors.white12),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.green.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.download, color: Colors.green),
+                ),
+                title: const Text('Received Files', style: TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  'Clear receive history',
+                  style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                ),
+                trailing: TextButton(
+                  onPressed: () => _confirmClearReceiveHistory(context),
+                  child: const Text('Clear', style: TextStyle(color: Colors.red)),
+                ),
+              ),
+              const Divider(height: 1, color: Colors.white12),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.orange.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.upload, color: Colors.orange),
+                ),
+                title: const Text('Sent Files', style: TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  'Clear send history',
+                  style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                ),
+                trailing: TextButton(
+                  onPressed: () => _confirmClearSendHistory(context),
+                  child: const Text('Clear', style: TextStyle(color: Colors.red)),
+                ),
+              ),
+              const Divider(height: 1, color: Colors.white12),
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.red.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.delete_forever, color: Colors.red),
+                ),
+                title: const Text('Clear All History', style: TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  'Delete everything',
+                  style: TextStyle(color: Colors.white.withOpacity(0.5)),
+                ),
+                trailing: TextButton(
+                  onPressed: () => _confirmClearAllHistory(context),
+                  child: const Text('Clear All', style: TextStyle(color: Colors.red)),
+                ),
+              ),
+            ],
           ),
         ),
         
@@ -738,6 +832,144 @@ class SettingsTab extends StatelessWidget {
               backgroundColor: Theme.of(context).colorScheme.primary,
             ),
             child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _confirmClearChatHistory(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Clear Chat History', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'This will delete all chat messages. This action cannot be undone.',
+          style: TextStyle(color: Colors.white.withOpacity(0.7)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('Cancel', style: TextStyle(color: Colors.white.withOpacity(0.7))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await context.read<ChatProvider>().clearAllHistory();
+              if (context.mounted) {
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Chat history cleared')),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _confirmClearReceiveHistory(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Clear Receive History', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'This will delete the history of received files. Files on disk will not be deleted.',
+          style: TextStyle(color: Colors.white.withOpacity(0.7)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('Cancel', style: TextStyle(color: Colors.white.withOpacity(0.7))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await context.read<ReceiveProvider>().clearHistory();
+              if (context.mounted) {
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Receive history cleared')),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _confirmClearSendHistory(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Clear Send History', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'This will delete the history of sent files.',
+          style: TextStyle(color: Colors.white.withOpacity(0.7)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('Cancel', style: TextStyle(color: Colors.white.withOpacity(0.7))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await context.read<SendProvider>().clearHistory();
+              if (context.mounted) {
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('Send history cleared')),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Clear'),
+          ),
+        ],
+      ),
+    );
+  }
+  
+  void _confirmClearAllHistory(BuildContext context) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Clear All History', style: TextStyle(color: Colors.white)),
+        content: Text(
+          'This will delete all chat messages and file history. This action cannot be undone.',
+          style: TextStyle(color: Colors.white.withOpacity(0.7)),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('Cancel', style: TextStyle(color: Colors.white.withOpacity(0.7))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              await context.read<ChatProvider>().clearAllHistory();
+              await context.read<ReceiveProvider>().clearHistory();
+              await context.read<SendProvider>().clearHistory();
+              if (context.mounted) {
+                Navigator.of(context).pop();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('All history cleared')),
+                );
+              }
+            },
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            child: const Text('Clear All'),
           ),
         ],
       ),

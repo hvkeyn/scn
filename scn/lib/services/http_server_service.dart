@@ -10,6 +10,7 @@ import 'package:scn/models/session.dart';
 import 'package:scn/models/chat_message.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/chat_provider.dart';
+import 'package:scn/utils/logger.dart';
 import 'package:uuid/uuid.dart';
 
 /// HTTP server service for receiving files
@@ -318,8 +319,9 @@ class HttpServerService {
       final senderId = data['senderId'] as String? ?? _uuid.v4();
       final senderAlias = data['senderAlias'] as String? ?? 'Unknown';
       
-      print('📨 Received chat message from $senderAlias: $message');
-      print('   ChatProvider available: ${_chatProvider != null}');
+      AppLogger.log('📨 Received chat message from $senderAlias ($senderId): $message');
+      AppLogger.log('   ChatProvider available: ${_chatProvider != null}');
+      AppLogger.log('   isGroupMessage: $isGroupMessage');
       
       if (_chatProvider != null) {
         // Add message to chat provider
@@ -334,9 +336,9 @@ class HttpServerService {
             isGroupMessage: isGroupMessage,
           ),
         );
-        print('   ✅ Message added. Total unread: ${_chatProvider!.totalUnreadCount}');
+        AppLogger.log('   ✅ Message added. Total unread: ${_chatProvider!.totalUnreadCount}');
       } else {
-        print('   ❌ ChatProvider is null!');
+        AppLogger.log('   ❌ ChatProvider is null!');
       }
       
       return Response.ok(jsonEncode({'status': 'ok'}));

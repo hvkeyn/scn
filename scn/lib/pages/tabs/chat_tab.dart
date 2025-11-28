@@ -897,9 +897,11 @@ class _ChatTabState extends State<ChatTab> {
       }
       
       // Add to local chat
+      // deviceId should be recipient's ID for proper conversation grouping
+      // deviceAlias should be OUR alias (sender)
       chatProvider.addMessage(ChatMessage.file(
         id: _uuid.v4(),
-        deviceId: appService.deviceId,
+        deviceId: isGroupChat ? groupChatId : conversation.deviceId,
         deviceAlias: appService.deviceAlias,
         fileName: file.name,
         fileSize: file.size,
