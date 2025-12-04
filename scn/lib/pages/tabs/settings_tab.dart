@@ -8,6 +8,7 @@ import 'package:scn/providers/send_provider.dart';
 import 'package:scn/models/remote_peer.dart';
 import 'package:scn/widgets/scn_logo.dart';
 import 'package:scn/utils/test_config.dart';
+import 'package:scn/pages/vpn_page.dart';
 
 class SettingsTab extends StatelessWidget {
   const SettingsTab({super.key});
@@ -189,6 +190,34 @@ class SettingsTab extends StatelessWidget {
                 ),
               ],
             ],
+          ),
+        ),
+        
+        // VPN / Internet P2P Button
+        const SizedBox(height: 8),
+        _buildCard(
+          context,
+          child: ListTile(
+            leading: Container(
+              padding: const EdgeInsets.all(8),
+              decoration: BoxDecoration(
+                color: Colors.blue.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: const Icon(Icons.vpn_key, color: Colors.blue),
+            ),
+            title: const Text('Internet VPN (P2P)', style: TextStyle(color: Colors.white)),
+            subtitle: Text(
+              'Connect to devices over the internet',
+              style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+            ),
+            trailing: Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.5)),
+            onTap: () {
+              Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const VpnPage()),
+              );
+            },
           ),
         ),
         

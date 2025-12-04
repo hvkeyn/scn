@@ -6,14 +6,29 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 import 'package:uuid/uuid.dart';
 import 'package:scn/models/remote_peer.dart';
+import 'package:scn/services/stun_service.dart';
+import 'package:scn/services/obfuscation_service.dart';
 
 /// Secure WebSocket channel service
 /// Uses WSS (WebSocket over TLS) to bypass DPI and provide encryption
+/// Supports NAT traversal via STUN and traffic obfuscation
 class SecureChannelService {
   HttpServer? _server;
   final Map<String, WebSocket> _connections = {};
   final Map<String, RemotePeer> _connectedPeers = {};
   final Uuid _uuid = const Uuid();
+  
+  // NAT traversal
+  final StunService _stun = StunService();
+  NatInfo? get natInfo => _stun.natInfo;
+  
+  // Traffic obfuscation
+  final ObfuscationService _obfuscation = ObfuscationService();
+  ObfuscationType get obfuscationType => _obfuscation.type;
+  
+  void setObfuscationType(ObfuscationType type) {
+    _obfuscation.setType(type);
+  }
   
   // Callbacks
   Function(SecureMessage message, String peerId)? onMessage;
@@ -30,6 +45,58 @@ class SecureChannelService {
   int get port => _settings.securePort;
   bool get isRunning => _server != null;
   List<RemotePeer> get connectedPeers => _connectedPeers.values.toList();
+  
+  /// Discover NAT type and public IP
+  Future<NatInfo?> discoverNat() async {
+    return await _stun.discoverNat(localPort: _settings.securePort);
+  }
+  
+  /// Get connection info for sharing
+  ConnectionInfo getConnectionInfo() {
+    return _stun.generateConnectionInfo(_settings.securePort);
+  }
+  
+  /// Try P2P connection with hole punching
+  Future<bool> connectP2P({
+    required String peerPublicIp,
+    required int peerPublicPort,
+  }) async {
+    try {
+      // First try direct WebSocket connection
+      final directSuccess = await connectToPeer(
+        address: peerPublicIp,
+        port: peerPublicPort,
+      );
+      
+      if (directSuccess) return true;
+      
+      // If direct connection fails, try UDP hole punching
+      print('Direct connection failed, trying hole punching...');
+      
+      final socket = await _stun.punchHole(
+        peerPublicIp: peerPublicIp,
+        peerPublicPort: peerPublicPort,
+        localPort: _settings.securePort,
+      );
+      
+      if (socket == null) {
+        print('Hole punching failed');
+        return false;
+      }
+      
+      // Hole punched successfully, try WebSocket again
+      socket.close();
+      await Future.delayed(const Duration(milliseconds: 100));
+      
+      return await connectToPeer(
+        address: peerPublicIp,
+        port: peerPublicPort,
+      );
+    } catch (e) {
+      print('P2P connection failed: $e');
+      return false;
+    }
+  }
   
   void setDeviceInfo({
     String? deviceId,
