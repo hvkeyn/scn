@@ -309,5 +309,29 @@ class RemotePeerProvider extends ChangeNotifier {
     notifyListeners();
     await _saveSettings();
   }
+
+  Future<void> setSignalingServerUrl(String url) async {
+    _settings = _settings.copyWith(signalingServerUrl: url.trim());
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setPreferRelay(bool enabled) async {
+    _settings = _settings.copyWith(preferRelay: enabled);
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setEnableLegacyDirect(bool enabled) async {
+    _settings = _settings.copyWith(enableLegacyDirect: enabled);
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setTurnServers(List<String> turnServers) async {
+    _settings = _settings.copyWith(turnServers: turnServers);
+    notifyListeners();
+    await _saveSettings();
+  }
 }
 

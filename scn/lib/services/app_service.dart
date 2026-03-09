@@ -29,10 +29,22 @@ class AppService extends ChangeNotifier {
   static const String _deviceFingerprintKey = 'device_fingerprint';
   
   RemotePeerProvider? _peerProvider;
+  VoidCallback? _peerSettingsListener;
   
   bool get initialized => _initialized;
   bool get running => _running;
   int get port => _httpServer.port;
+  int? get signalingPort => _meshNetwork.embeddedLocalSignalingUrl != null
+      ? Uri.parse(_meshNetwork.embeddedLocalSignalingUrl!).port
+      : null;
+  String? get signalingUrl => _meshNetwork.embeddedLocalSignalingUrl;
+  String? get advertisedSignalingUrl => _meshNetwork.embeddedAdvertiseSignalingUrl;
+  String get wanConnectionStage => _meshNetwork.connectionStage;
+  String get wanConnectionDetails => _meshNetwork.connectionDetails;
+  String get wanSignalingState => _meshNetwork.signalingState;
+  String get wanIceState => _meshNetwork.iceState;
+  String get wanDataChannelState => _meshNetwork.dataChannelState;
+  String? get wanLastError => _meshNetwork.lastConnectionError;
   String get deviceAlias => _deviceAlias;
   String get deviceFingerprint => _deviceFingerprint;
   String get deviceId => _deviceFingerprint; // deviceId is same as fingerprint
@@ -52,8 +64,16 @@ class AppService extends ChangeNotifier {
     _discovery.setProvider(deviceProvider ?? DeviceProvider());
     
     if (peerProvider != null) {
+      if (_peerProvider != null && _peerSettingsListener != null) {
+        _peerProvider!.removeListener(_peerSettingsListener!);
+      }
       _peerProvider = peerProvider;
       _meshNetwork.setProvider(peerProvider);
+      _meshNetwork.onStateChanged = notifyListeners;
+      _peerSettingsListener = () {
+        _meshNetwork.updateSettings(peerProvider.settings);
+      };
+      peerProvider.addListener(_peerSettingsListener!);
     }
     
     _updateDeviceInfo();
@@ -250,6 +270,9 @@ class AppService extends ChangeNotifier {
   
   @override
   void dispose() {
+    if (_peerProvider != null && _peerSettingsListener != null) {
+      _peerProvider!.removeListener(_peerSettingsListener!);
+    }
     stop();
     super.dispose();
   }

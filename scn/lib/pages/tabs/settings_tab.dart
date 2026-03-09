@@ -206,9 +206,9 @@ class SettingsTab extends StatelessWidget {
               ),
               child: const Icon(Icons.vpn_key, color: Colors.blue),
             ),
-            title: const Text('Internet VPN (P2P)', style: TextStyle(color: Colors.white)),
+            title: const Text('Internet P2P / Relay', style: TextStyle(color: Colors.white)),
             subtitle: Text(
-              'Connect to devices over the internet',
+              'Invite-based WAN connections via signaling + WebRTC',
               style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
             ),
             trailing: Icon(Icons.chevron_right, color: Colors.white.withOpacity(0.5)),
@@ -218,6 +218,68 @@ class SettingsTab extends StatelessWidget {
                 MaterialPageRoute(builder: (_) => const VpnPage()),
               );
             },
+          ),
+        ),
+
+        const SizedBox(height: 8),
+        _buildCard(
+          context,
+          child: Column(
+            children: [
+              ListTile(
+                leading: Container(
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.teal.withOpacity(0.2),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: const Icon(Icons.router, color: Colors.teal),
+                ),
+                title: const Text('Signaling Server', style: TextStyle(color: Colors.white)),
+                subtitle: Text(
+                  settings.signalingServerUrl,
+                  style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
+                ),
+                trailing: Icon(Icons.edit, color: Colors.white.withOpacity(0.5)),
+                onTap: () => _showSignalingServerDialog(context, peerProvider),
+              ),
+              Divider(color: Colors.white.withOpacity(0.1)),
+              SwitchListTile(
+                secondary: Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Icon(Icons.compare_arrows, color: Colors.white.withOpacity(0.5), size: 20),
+                ),
+                title: Text(
+                  'Prefer relay when needed',
+                  style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 14),
+                ),
+                subtitle: Text(
+                  'Force TURN-friendly path instead of overpromising direct reachability',
+                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11),
+                ),
+                value: settings.preferRelay,
+                activeColor: theme.colorScheme.primary,
+                onChanged: (value) => peerProvider.setPreferRelay(value),
+              ),
+              Divider(color: Colors.white.withOpacity(0.1)),
+              SwitchListTile(
+                secondary: Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Icon(Icons.cable, color: Colors.white.withOpacity(0.5), size: 20),
+                ),
+                title: Text(
+                  'Allow legacy direct IP mode',
+                  style: TextStyle(color: Colors.white.withOpacity(0.8), fontSize: 14),
+                ),
+                subtitle: Text(
+                  'Compatibility only. Not considered reliable WAN connectivity.',
+                  style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 11),
+                ),
+                value: settings.enableLegacyDirect,
+                activeColor: theme.colorScheme.primary,
+                onChanged: (value) => peerProvider.setEnableLegacyDirect(value),
+              ),
+            ],
           ),
         ),
         
@@ -596,9 +658,11 @@ class SettingsTab extends StatelessWidget {
   }
   
   void _launchTestInstance(BuildContext context) async {
+    final messenger = ScaffoldMessenger.of(context);
     final instanceNum = await TestConfig.findNextAvailableInstance();
-    
-    ScaffoldMessenger.of(context).showSnackBar(
+    if (!context.mounted) return;
+
+    messenger.showSnackBar(
       SnackBar(
         content: Text('Launching Test Instance #$instanceNum...'),
         backgroundColor: Colors.amber.shade700,
@@ -609,7 +673,7 @@ class SettingsTab extends StatelessWidget {
     
     if (context.mounted) {
       if (success) {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(
             content: Text('Test Instance #$instanceNum launched! Port: ${TestConfig.basePort + (instanceNum * 10)}'),
             backgroundColor: Colors.green.shade700,
@@ -617,7 +681,7 @@ class SettingsTab extends StatelessWidget {
           ),
         );
       } else {
-        ScaffoldMessenger.of(context).showSnackBar(
+        messenger.showSnackBar(
           SnackBar(
             content: const Text('Failed to launch test instance'),
             backgroundColor: Colors.red.shade700,
@@ -768,6 +832,77 @@ class SettingsTab extends StatelessWidget {
                   Navigator.of(context).pop();
                   ScaffoldMessenger.of(context).showSnackBar(
                     const SnackBar(content: Text('Device name saved')),
+                  );
+                }
+              }
+            },
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.primary,
+            ),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showSignalingServerDialog(BuildContext context, RemotePeerProvider peerProvider) {
+    final controller = TextEditingController(text: peerProvider.settings.signalingServerUrl);
+
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
+        title: const Text('Signaling Server', style: TextStyle(color: Colors.white)),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'Base URL of the signaling backend. Example: http://127.0.0.1:8787',
+              style: TextStyle(color: Colors.white.withOpacity(0.6), fontSize: 13),
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: controller,
+              style: const TextStyle(color: Colors.white),
+              decoration: InputDecoration(
+                hintText: 'http://127.0.0.1:8787',
+                hintStyle: TextStyle(color: Colors.white.withOpacity(0.3)),
+                prefixIcon: Icon(Icons.router, color: Colors.white.withOpacity(0.5)),
+                filled: true,
+                fillColor: Colors.white.withOpacity(0.05),
+                border: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: Colors.white.withOpacity(0.2)),
+                ),
+                enabledBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: Colors.white.withOpacity(0.2)),
+                ),
+                focusedBorder: OutlineInputBorder(
+                  borderRadius: BorderRadius.circular(10),
+                  borderSide: BorderSide(color: Theme.of(context).colorScheme.primary),
+                ),
+              ),
+              autofocus: true,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: Text('Cancel', style: TextStyle(color: Colors.white.withOpacity(0.7))),
+          ),
+          ElevatedButton(
+            onPressed: () async {
+              final value = controller.text.trim();
+              if (value.isNotEmpty) {
+                await peerProvider.setSignalingServerUrl(value);
+                if (context.mounted) {
+                  Navigator.of(context).pop();
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Signaling server saved')),
                   );
                 }
               }
@@ -987,9 +1122,12 @@ class SettingsTab extends StatelessWidget {
           ),
           ElevatedButton(
             onPressed: () async {
-              await context.read<ChatProvider>().clearAllHistory();
-              await context.read<ReceiveProvider>().clearHistory();
-              await context.read<SendProvider>().clearHistory();
+              final chatProvider = context.read<ChatProvider>();
+              final receiveProvider = context.read<ReceiveProvider>();
+              final sendProvider = context.read<SendProvider>();
+              await chatProvider.clearAllHistory();
+              await receiveProvider.clearHistory();
+              await sendProvider.clearHistory();
               if (context.mounted) {
                 Navigator.of(context).pop();
                 ScaffoldMessenger.of(context).showSnackBar(

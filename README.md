@@ -14,8 +14,8 @@ SCN (Secure Connection Network) is a simplified version of an application for se
 - ✅ **Secure file sharing** - Transfer files between devices on local network
 - ✅ **Real-time chat** - Exchange text messages between devices
 - ✅ **Automatic device discovery** - UDP multicast for finding devices on network
-- ✅ **Secure mesh network** - Connect remote peers via encrypted WebSocket channels
-- ✅ **DPI bypass** - WebSocket over TLS to bypass network restrictions
+- ✅ **Secure mesh network** - Connect remote peers over the internet via signaling + WebRTC foundation
+- ✅ **TURN-ready fallback** - Relay path for symmetric NAT, CGNAT and mobile networks
 - ✅ **Simple architecture** - Flutter/Dart only, no complex dependencies
 - ✅ **Cross-platform** - Windows, Linux, macOS (in development)
 - ✅ **Privacy** - Works without external servers, all data transmitted directly
@@ -114,7 +114,7 @@ For the application to work, you need to:
 
 1. **Configure firewall:**
    - Allow incoming TCP/UDP connections on port 53317 (HTTP/Discovery)
-   - Allow incoming TCP connections on port 53318 (Secure WebSocket)
+   - Allow outgoing connectivity to signaling and TURN services
    - Allow outgoing TCP/UDP connections
 
 2. **Disable AP Isolation:**
@@ -125,8 +125,9 @@ For the application to work, you need to:
    - On Windows: configure network as "Private" (not "Public")
 
 4. **For remote connections:**
-   - Configure port forwarding on router for ports 53317-53318
-   - Or use VPN/tunneling for direct access
+   - Prefer invite tokens through signaling backend
+   - Keep TURN available as standard fallback
+   - Router port forwarding is optional and mainly helps legacy direct mode
 
 ### Main Features
 

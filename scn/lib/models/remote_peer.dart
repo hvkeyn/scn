@@ -14,6 +14,22 @@ enum PeerStatus {
   error,
 }
 
+/// Transport actually used to communicate with the peer.
+enum PeerTransport {
+  unknown,
+  legacySocket,
+  webRtcDataChannel,
+}
+
+/// How traffic reaches the peer on WAN.
+enum PeerConnectionPath {
+  unknown,
+  lan,
+  direct,
+  relayed,
+  legacyDirect,
+}
+
 /// Remote peer model
 class RemotePeer {
   final String id;
@@ -26,6 +42,11 @@ class RemotePeer {
   final DateTime? lastSeen;
   final bool isFavorite;
   final String? errorMessage;
+  final PeerTransport transport;
+  final PeerConnectionPath connectionPath;
+  final bool relayRequired;
+  final String? sessionId;
+  final String? signalingServerUrl;
   
   /// Peers that this peer knows about (for mesh network)
   final List<String> knownPeers;
@@ -41,6 +62,11 @@ class RemotePeer {
     this.lastSeen,
     this.isFavorite = false,
     this.errorMessage,
+    this.transport = PeerTransport.unknown,
+    this.connectionPath = PeerConnectionPath.unknown,
+    this.relayRequired = false,
+    this.sessionId,
+    this.signalingServerUrl,
     this.knownPeers = const [],
   });
   
@@ -58,6 +84,11 @@ class RemotePeer {
     DateTime? lastSeen,
     bool? isFavorite,
     String? errorMessage,
+    PeerTransport? transport,
+    PeerConnectionPath? connectionPath,
+    bool? relayRequired,
+    String? sessionId,
+    String? signalingServerUrl,
     List<String>? knownPeers,
   }) {
     return RemotePeer(
@@ -71,6 +102,11 @@ class RemotePeer {
       lastSeen: lastSeen ?? this.lastSeen,
       isFavorite: isFavorite ?? this.isFavorite,
       errorMessage: errorMessage ?? this.errorMessage,
+      transport: transport ?? this.transport,
+      connectionPath: connectionPath ?? this.connectionPath,
+      relayRequired: relayRequired ?? this.relayRequired,
+      sessionId: sessionId ?? this.sessionId,
+      signalingServerUrl: signalingServerUrl ?? this.signalingServerUrl,
       knownPeers: knownPeers ?? this.knownPeers,
     );
   }
@@ -84,6 +120,11 @@ class RemotePeer {
     'fingerprint': fingerprint,
     'lastSeen': lastSeen?.toIso8601String(),
     'isFavorite': isFavorite,
+    'transport': transport.name,
+    'connectionPath': connectionPath.name,
+    'relayRequired': relayRequired,
+    'sessionId': sessionId,
+    'signalingServerUrl': signalingServerUrl,
     'knownPeers': knownPeers,
   };
   
@@ -102,6 +143,17 @@ class RemotePeer {
           ? DateTime.tryParse(json['lastSeen'] as String)
           : null,
       isFavorite: json['isFavorite'] as bool? ?? false,
+      transport: PeerTransport.values.firstWhere(
+        (value) => value.name == json['transport'],
+        orElse: () => PeerTransport.unknown,
+      ),
+      connectionPath: PeerConnectionPath.values.firstWhere(
+        (value) => value.name == json['connectionPath'],
+        orElse: () => PeerConnectionPath.unknown,
+      ),
+      relayRequired: json['relayRequired'] as bool? ?? false,
+      sessionId: json['sessionId'] as String?,
+      signalingServerUrl: json['signalingServerUrl'] as String?,
       knownPeers: (json['knownPeers'] as List<dynamic>?)
           ?.map((e) => e as String)
           .toList() ?? [],
@@ -119,6 +171,11 @@ class NetworkSettings {
   final bool acceptWithoutPassword; // Accept connections without password
   final String? connectionPassword; // Optional password for connections
   final int securePort;            // Port for secure WebSocket server
+  final String signalingServerUrl; // Base URL of signaling backend
+  final bool preferRelay;          // Force relay-only ICE policy when needed
+  final bool enableLegacyDirect;   // Allow old IP:port direct path as fallback
+  final List<String> stunServers;  // STUN servers used for ICE
+  final List<String> turnServers;  // TURN URLs used as fallback
   
   const NetworkSettings({
     this.meshEnabled = true,
@@ -126,6 +183,15 @@ class NetworkSettings {
     this.acceptWithoutPassword = true,
     this.connectionPassword,
     this.securePort = 53318,
+    this.signalingServerUrl = 'http://127.0.0.1:8787',
+    this.preferRelay = false,
+    this.enableLegacyDirect = true,
+    this.stunServers = const [
+      'stun:stun.l.google.com:19302',
+      'stun:stun1.l.google.com:19302',
+      'stun:stun.cloudflare.com:3478',
+    ],
+    this.turnServers = const [],
   });
   
   NetworkSettings copyWith({
@@ -134,6 +200,11 @@ class NetworkSettings {
     bool? acceptWithoutPassword,
     String? connectionPassword,
     int? securePort,
+    String? signalingServerUrl,
+    bool? preferRelay,
+    bool? enableLegacyDirect,
+    List<String>? stunServers,
+    List<String>? turnServers,
   }) {
     return NetworkSettings(
       meshEnabled: meshEnabled ?? this.meshEnabled,
@@ -141,6 +212,11 @@ class NetworkSettings {
       acceptWithoutPassword: acceptWithoutPassword ?? this.acceptWithoutPassword,
       connectionPassword: connectionPassword ?? this.connectionPassword,
       securePort: securePort ?? this.securePort,
+      signalingServerUrl: signalingServerUrl ?? this.signalingServerUrl,
+      preferRelay: preferRelay ?? this.preferRelay,
+      enableLegacyDirect: enableLegacyDirect ?? this.enableLegacyDirect,
+      stunServers: stunServers ?? this.stunServers,
+      turnServers: turnServers ?? this.turnServers,
     );
   }
   
@@ -150,6 +226,11 @@ class NetworkSettings {
     'acceptWithoutPassword': acceptWithoutPassword,
     'connectionPassword': connectionPassword,
     'securePort': securePort,
+    'signalingServerUrl': signalingServerUrl,
+    'preferRelay': preferRelay,
+    'enableLegacyDirect': enableLegacyDirect,
+    'stunServers': stunServers,
+    'turnServers': turnServers,
   };
   
   factory NetworkSettings.fromJson(Map<String, dynamic> json) {
@@ -159,6 +240,21 @@ class NetworkSettings {
       acceptWithoutPassword: json['acceptWithoutPassword'] as bool? ?? true,
       connectionPassword: json['connectionPassword'] as String?,
       securePort: json['securePort'] as int? ?? 53318,
+      signalingServerUrl: json['signalingServerUrl'] as String? ?? 'http://127.0.0.1:8787',
+      preferRelay: json['preferRelay'] as bool? ?? false,
+      enableLegacyDirect: json['enableLegacyDirect'] as bool? ?? true,
+      stunServers: (json['stunServers'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [
+            'stun:stun.l.google.com:19302',
+            'stun:stun1.l.google.com:19302',
+            'stun:stun.cloudflare.com:3478',
+          ],
+      turnServers: (json['turnServers'] as List<dynamic>?)
+              ?.map((e) => e.toString())
+              .toList() ??
+          const [],
     );
   }
 }

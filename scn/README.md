@@ -14,6 +14,7 @@ SCN is a cross-platform application that allows you to securely exchange files a
 - ✅ **UDP Multicast Discovery** - Automatic device discovery
 - ✅ **Chat** - Real-time message exchange
 - ✅ **File transfer** - Send and receive files
+- ✅ **WAN foundation** - Signaling + WebRTC invite flow with TURN-ready fallback
 - ✅ **Beautiful UI** - Modern interface with SCN logo
 
 ## Quick Start
@@ -30,6 +31,19 @@ flutter pub get
 flutter run -d windows
 ```
 
+### Embedded Signaling
+
+The app now starts its signaling backend automatically inside `scn.exe`.
+Default local URL in settings is `http://127.0.0.1:8787` and the UI shows the actual port if it changes.
+
+### Run Separate Signaling Backend
+
+```bash
+dart run bin/signaling_server.dart
+```
+
+Use this only if you want a dedicated external signaling host.
+
 ### Build Release
 
 ```bash
@@ -41,7 +55,7 @@ Result will be in `scn-release/` folder.
 
 ## Project Structure
 
-```
+```text
 lib/
 ├── main.dart              - Application entry point
 ├── services/              - Services
@@ -98,6 +112,12 @@ Full list in `pubspec.yaml`.
 - `POST /api/upload` - Upload file
 - `POST /api/chat` - Send message
 
+### WAN Signaling
+
+- `POST /api/v1/sessions` - Create invite session
+- `GET /api/v1/sessions/:id` - Read session status
+- `GET /ws` - WebSocket signaling channel for `offer/answer/ICE`
+
 ### UDP Multicast
 
 - Port: 53317
@@ -117,6 +137,14 @@ Full list in `pubspec.yaml`.
 flutter test
 ```
 
+For WAN testing:
+
+1. Start the app on both devices
+2. Open `Settings -> Mesh Network`
+3. Check the `Signaling Server` URL or keep the embedded default
+4. Open `Internet P2P`
+5. Generate an invite on one device and paste it on another
+
 ### Code Analysis
 
 ```bash
@@ -126,6 +154,14 @@ flutter analyze
 ## Version
 
 Current version: **1.0.0**
+
+## WAN Notes
+
+- Direct internet connectivity is no longer assumed from `public IP + port` alone.
+- TURN relay is the normal fallback for symmetric NAT, CGNAT and many mobile networks.
+- Router port forwarding is optional and mainly helps legacy direct mode.
+- Embedded signaling removes the need for a separate manual backend process, but internet reachability still requires a publicly reachable signaling address or a dedicated external server.
+- More details: `docs/wan_p2p.md`
 
 ## License
 

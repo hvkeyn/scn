@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:math';
+import 'package:flutter/foundation.dart';
 import 'package:crypto/crypto.dart';
 import 'package:scn/services/stun_service.dart';
 
@@ -42,35 +43,111 @@ class PeerDiscoveryService {
   
   /// Parse invite code from string
   InviteCode? parseInviteCode(String code) {
+    final trimmed = code.trim();
+    if (trimmed.isEmpty) return null;
     try {
-      // Support both URL format and base64 format
-      if (code.startsWith('scn://')) {
-        return _parseUrlCode(code);
-      } else {
-        return _parseBase64Code(code);
+      // Extract URL if embedded in other text (e.g. "Name:\nscn://...")
+      final urlMatch = RegExp(r'scn://[^\s]+').firstMatch(trimmed);
+      if (urlMatch != null) {
+        return _parseUrlCode(urlMatch.group(0)!);
       }
+      
+      // Support short code format: ALIAS@IP:PORT#SECRET
+      final shortCode = _parseShortCode(trimmed);
+      if (shortCode != null) return shortCode;
+      
+      // Fallback to base64 format
+      return _parseBase64Code(trimmed);
     } catch (e) {
-      print('Failed to parse invite code: $e');
+      debugPrint('Failed to parse invite code: $e');
       return null;
     }
   }
   
   InviteCode? _parseUrlCode(String url) {
+    final sessionMatch = RegExp(r'^scn://session/([^?\s]+)').firstMatch(url);
+    if (sessionMatch != null) {
+      final uri = Uri.parse(url);
+      return InviteCode(
+        deviceId: '',
+        deviceAlias: uri.queryParameters['alias'] ?? 'Unknown',
+        publicIp: null,
+        publicPort: null,
+        localPort: 53318,
+        password: uri.queryParameters['pwd'],
+        secret: uri.queryParameters['secret'],
+        expiresAt: null,
+        natType: NatType.unknown,
+        transportKind: InviteTransportKind.signalingSession,
+        signalingServerUrl: uri.queryParameters['signal'],
+        sessionId: sessionMatch.group(1),
+        inviteToken: uri.queryParameters['token'],
+      );
+    }
+
     // Format: scn://ip:port/deviceId?alias=xxx&secret=xxx
     final uri = Uri.parse(url);
-    
-    final parts = uri.host.split(':');
-    final ip = parts[0];
-    final port = parts.length > 1 ? int.tryParse(parts[1]) : uri.port;
+    final ip = uri.host;
+    final port = uri.hasPort ? uri.port : null;
+    final localPortParam = int.tryParse(uri.queryParameters['lport'] ?? '');
+    final localPort = localPortParam ?? port ?? 53318;
     
     return InviteCode(
       deviceId: uri.pathSegments.isNotEmpty ? uri.pathSegments.first : '',
       deviceAlias: uri.queryParameters['alias'] ?? 'Unknown',
       publicIp: ip,
       publicPort: port,
-      localPort: port ?? 53318,
+      localPort: localPort,
       password: uri.queryParameters['pwd'],
       secret: uri.queryParameters['secret'],
+      expiresAt: null,
+      natType: NatType.unknown,
+    );
+  }
+
+  InviteCode? _parseShortCode(String code) {
+    final sessionMatch = RegExp(r'^(.+?)@session:([^#]+)(?:#(.+))?$').firstMatch(code);
+    if (sessionMatch != null) {
+      final alias = sessionMatch.group(1)?.trim();
+      final sessionId = sessionMatch.group(2)?.trim();
+      if (sessionId == null || sessionId.isEmpty) return null;
+
+      return InviteCode(
+        deviceId: '',
+        deviceAlias: (alias == null || alias.isEmpty) ? 'Unknown' : alias,
+        publicIp: null,
+        publicPort: null,
+        localPort: 53318,
+        password: null,
+        secret: null,
+        expiresAt: null,
+        natType: NatType.unknown,
+        transportKind: InviteTransportKind.signalingSession,
+        sessionId: sessionId,
+        inviteToken: sessionMatch.group(3),
+      );
+    }
+
+    // Format: ALIAS@IP:PORT#SECRET (alias may contain spaces)
+    final match = RegExp(r'^(.+?)@([0-9\\.]+)(?::(\\d{1,5}))?(?:#(.+))?$')
+        .firstMatch(code);
+    if (match == null) return null;
+    
+    final alias = match.group(1)?.trim();
+    final ip = match.group(2);
+    final port = int.tryParse(match.group(3) ?? '');
+    final secret = match.group(4);
+    
+    if (ip == null || ip.isEmpty) return null;
+    
+    return InviteCode(
+      deviceId: '',
+      deviceAlias: (alias == null || alias.isEmpty) ? 'Unknown' : alias,
+      publicIp: ip,
+      publicPort: port ?? 53318,
+      localPort: port ?? 53318,
+      password: null,
+      secret: secret,
       expiresAt: null,
       natType: NatType.unknown,
     );
@@ -97,6 +174,11 @@ class PeerDiscoveryService {
 }
 
 /// Invite code for peer connection
+enum InviteTransportKind {
+  legacyDirect,
+  signalingSession,
+}
+
 class InviteCode {
   final String deviceId;
   final String deviceAlias;
@@ -107,6 +189,10 @@ class InviteCode {
   final String? secret;
   final DateTime? expiresAt;
   final NatType natType;
+  final InviteTransportKind transportKind;
+  final String? signalingServerUrl;
+  final String? sessionId;
+  final String? inviteToken;
   
   InviteCode({
     required this.deviceId,
@@ -118,11 +204,20 @@ class InviteCode {
     this.secret,
     this.expiresAt,
     required this.natType,
+    this.transportKind = InviteTransportKind.legacyDirect,
+    this.signalingServerUrl,
+    this.sessionId,
+    this.inviteToken,
   });
   
   bool get isExpired => expiresAt != null && DateTime.now().isAfter(expiresAt!);
   bool get hasPassword => password != null && password!.isNotEmpty;
   bool get hasPublicIp => publicIp != null && publicIp!.isNotEmpty;
+  bool get usesSignalingSession =>
+      transportKind == InviteTransportKind.signalingSession &&
+      signalingServerUrl != null &&
+      sessionId != null &&
+      inviteToken != null;
   
   String get fingerprint => PeerDiscoveryService.generateFingerprint(
     deviceId,
@@ -131,11 +226,26 @@ class InviteCode {
   
   /// Convert to URL format for sharing
   String toUrl() {
+    if (usesSignalingSession) {
+      final query = <String, String>{
+        'alias': deviceAlias,
+        'signal': signalingServerUrl!,
+        'token': inviteToken!,
+        if (secret != null) 'secret': secret!,
+        if (password != null) 'pwd': password!,
+      };
+      final queryStr = query.entries
+          .map((entry) => '${entry.key}=${Uri.encodeComponent(entry.value)}')
+          .join('&');
+      return 'scn://session/${sessionId!}${queryStr.isNotEmpty ? '?$queryStr' : ''}';
+    }
+
     final port = publicPort ?? localPort;
     final host = publicIp ?? 'unknown';
     
     final params = <String, String>{
       'alias': deviceAlias,
+      'lport': localPort.toString(),
       if (secret != null) 'secret': secret!,
       if (password != null) 'pwd': password!,
     };
@@ -155,10 +265,18 @@ class InviteCode {
   
   /// Convert to short text format for manual entry
   String toShortCode() {
+    if (usesSignalingSession) {
+      final shortToken = inviteToken!.length > 8
+          ? inviteToken!.substring(0, 8)
+          : inviteToken!;
+      return '$deviceAlias@session:$sessionId#$shortToken';
+    }
+
     // Format: ALIAS@IP:PORT#SECRET
     final port = publicPort ?? localPort;
     final ip = publicIp ?? 'unknown';
-    final shortSecret = (secret ?? '').substring(0, 6);
+    final rawSecret = secret ?? '';
+    final shortSecret = rawSecret.length > 6 ? rawSecret.substring(0, 6) : rawSecret;
     
     return '$deviceAlias@$ip:$port#$shortSecret';
   }
@@ -173,6 +291,10 @@ class InviteCode {
     'secret': secret,
     'expiresAt': expiresAt?.toIso8601String(),
     'natType': natType.name,
+    'transportKind': transportKind.name,
+    'signalingServerUrl': signalingServerUrl,
+    'sessionId': sessionId,
+    'inviteToken': inviteToken,
   };
   
   factory InviteCode.fromJson(Map<String, dynamic> json) {
@@ -191,6 +313,13 @@ class InviteCode {
         (t) => t.name == json['natType'],
         orElse: () => NatType.unknown,
       ),
+      transportKind: InviteTransportKind.values.firstWhere(
+        (value) => value.name == json['transportKind'],
+        orElse: () => InviteTransportKind.legacyDirect,
+      ),
+      signalingServerUrl: json['signalingServerUrl'] as String?,
+      sessionId: json['sessionId'] as String?,
+      inviteToken: json['inviteToken'] as String?,
     );
   }
   

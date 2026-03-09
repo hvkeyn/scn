@@ -42,6 +42,9 @@ dependencies:
   
   # QR Code
   qr_flutter: ^4.1.0
+  flutter_webrtc: ^1.3.1
+  shelf_web_socket: ^3.0.0
+  web_socket_channel: ^3.0.3
 
 dev_dependencies:
   flutter_test:
