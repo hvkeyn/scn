@@ -298,9 +298,17 @@ class RemoteDesktopHostService extends ChangeNotifier {
           }
 
           final signal = RemoteDesktopSignal.fromJson(json);
-          await _handleHostSignal(session!, signal);
+          try {
+            await _handleHostSignal(session!, signal);
+          } catch (e, st) {
+            AppLogger.log(
+                'RD host: handler for ${signal.type.name} failed: $e\n$st');
+            await _failSession(session!,
+                'Ошибка обработки сигнала ${signal.type.name} на хосте:\n$e',
+                st);
+          }
         } catch (e, st) {
-          AppLogger.log('RD host WS error: $e\n$st');
+          AppLogger.log('RD host WS parse error: $e\n$st');
         }
       },
       onDone: () async {
@@ -414,6 +422,16 @@ class RemoteDesktopHostService extends ChangeNotifier {
         }
       };
 
+      pc.onIceConnectionState = (state) {
+        AppLogger.log(
+            'RD host: ICE connection state for ${session.sessionId} = $state');
+        if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
+          _failSession(session,
+              'ICE connection failed. Скорее всего разные подсети или фаервол '
+              'блокирует UDP. Попробуй настроить TURN-сервер.');
+        }
+      };
+
       pc.onDataChannel = (RTCDataChannel channel) {
         if (channel.label == 'scn-rd-input') {
           session.inputChannel = channel;
@@ -463,17 +481,23 @@ class RemoteDesktopHostService extends ChangeNotifier {
   }
 
   /// Аварийное завершение сессии: отправляет error-сигнал клиенту с
-  /// человекочитаемым сообщением, и только потом закрывает peer/ws.
-  Future<void> _failSession(_HostSession session, String message) async {
-    AppLogger.log('RD host: failing session ${session.sessionId}: $message');
+  /// человекочитаемым сообщением (и stack trace, если есть), и только потом
+  /// закрывает peer/ws.
+  Future<void> _failSession(_HostSession session, String message,
+      [StackTrace? stackTrace]) async {
+    final fullMessage = stackTrace == null
+        ? message
+        : '$message\n\nStack:\n$stackTrace';
+    AppLogger.log('RD host: failing session ${session.sessionId}: $message'
+        '${stackTrace != null ? '\n$stackTrace' : ''}');
     try {
       session.ws?.sink.add(jsonEncode({
         'type': RemoteDesktopSignalType.error.name,
-        'payload': {'message': message},
+        'payload': {'message': fullMessage},
       }));
     } catch (_) {}
     await _terminate(session, RemoteDesktopSessionStatus.failed,
-        error: message);
+        error: fullMessage);
   }
 
   Future<void> _handleHostSignal(
@@ -724,9 +748,13 @@ class RemoteDesktopHostService extends ChangeNotifier {
     session.errorMessage = error;
     session.statsTimer?.cancel();
     try {
-      session.ws?.sink.add(jsonEncode(
-          const RemoteDesktopSignal(type: RemoteDesktopSignalType.bye)
-              .toJson()));
+      session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
+        type: RemoteDesktopSignalType.bye,
+        payload: {
+          'status': status.name,
+          if (error != null) 'reason': error,
+        },
+      ).toJson()));
     } catch (_) {}
     try {
       await session.ws?.sink.close();
