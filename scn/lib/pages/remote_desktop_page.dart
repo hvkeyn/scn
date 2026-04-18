@@ -24,7 +24,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   final TextEditingController _hostCtrl = TextEditingController();
   final TextEditingController _portCtrl = TextEditingController(text: '53317');
   final TextEditingController _passwordCtrl = TextEditingController();
-  bool _wantControl = false;
+  bool _wantControl = true;
   bool _wantAudio = false;
 
   @override
