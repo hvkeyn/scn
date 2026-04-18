@@ -8,6 +8,7 @@ import 'package:uuid/uuid.dart';
 import 'package:scn/models/remote_peer.dart';
 import 'package:scn/services/stun_service.dart';
 import 'package:scn/services/obfuscation_service.dart';
+import 'package:scn/utils/logger.dart';
 
 /// Secure WebSocket channel service
 /// Uses WSS (WebSocket over TLS) to bypass DPI and provide encryption
@@ -42,7 +43,7 @@ class SecureChannelService {
   String _fingerprint = '';
   NetworkSettings _settings = const NetworkSettings();
   
-  int get port => _settings.securePort;
+  int get port => _server?.port ?? _settings.securePort;
   bool get isRunning => _server != null;
   List<RemotePeer> get connectedPeers => _connectedPeers.values.toList();
   
@@ -62,6 +63,7 @@ class SecureChannelService {
     required int peerPublicPort,
   }) async {
     try {
+      AppLogger.log('🌐 P2P connect attempt to $peerPublicIp:$peerPublicPort');
       // First try direct WebSocket connection
       final directSuccess = await connectToPeer(
         address: peerPublicIp,
@@ -71,7 +73,7 @@ class SecureChannelService {
       if (directSuccess) return true;
       
       // If direct connection fails, try UDP hole punching
-      print('Direct connection failed, trying hole punching...');
+      AppLogger.log('Direct connection failed, trying hole punching...');
       
       final socket = await _stun.punchHole(
         peerPublicIp: peerPublicIp,
@@ -80,7 +82,7 @@ class SecureChannelService {
       );
       
       if (socket == null) {
-        print('Hole punching failed');
+        AppLogger.log('Hole punching failed');
         return false;
       }
       
@@ -93,7 +95,7 @@ class SecureChannelService {
         port: peerPublicPort,
       );
     } catch (e) {
-      print('P2P connection failed: $e');
+      AppLogger.log('P2P connection failed: $e');
       return false;
     }
   }
@@ -117,42 +119,61 @@ class SecureChannelService {
     if (_server != null) return;
     
     try {
-      // Generate self-signed certificate for TLS
-      final securityContext = await _createSecurityContext();
-      
-      // Try multiple ports
       final portsToTry = [
         _settings.securePort,
         _settings.securePort + 1,
         _settings.securePort + 2,
       ];
       
-      for (final port in portsToTry) {
-        try {
-          _server = await HttpServer.bindSecure(
-            InternetAddress.anyIPv4,
-            port,
-            securityContext,
-          );
-          
-          print('Secure WebSocket server started on port $port');
-          
-          _server!.listen(_handleConnection);
-          return;
-        } on SocketException {
-          print('Port $port is busy, trying next...');
-          continue;
+      SecurityContext? securityContext;
+      try {
+        // Generate self-signed certificate for TLS
+        securityContext = await _createSecurityContext();
+      } catch (e) {
+        AppLogger.log('TLS setup failed, using WS: $e');
+        securityContext = null;
+      }
+      
+      if (securityContext != null) {
+        for (final port in portsToTry) {
+          try {
+            _server = await HttpServer.bindSecure(
+              InternetAddress.anyIPv4,
+              port,
+              securityContext,
+            );
+            
+            AppLogger.log('Secure WebSocket server started on port $port');
+            
+            _server!.listen(_handleConnection);
+            return;
+          } on SocketException {
+            AppLogger.log('Port $port is busy, trying next...');
+            continue;
+          } catch (e) {
+            AppLogger.log('Secure bind failed on port $port: $e');
+          }
         }
       }
       
-      // Fallback: try without TLS for testing
-      print('TLS failed, trying plain WebSocket...');
-      _server = await HttpServer.bind(InternetAddress.anyIPv4, _settings.securePort);
-      _server!.listen(_handleConnection);
-      print('WebSocket server started on port ${_settings.securePort} (no TLS)');
+      // Fallback: try without TLS
+      AppLogger.log('Starting plain WebSocket server...');
+      for (final port in portsToTry) {
+        try {
+          _server = await HttpServer.bind(InternetAddress.anyIPv4, port);
+          _server!.listen(_handleConnection);
+          AppLogger.log('WebSocket server started on port $port (no TLS)');
+          return;
+        } on SocketException {
+          AppLogger.log('Port $port is busy, trying next...');
+          continue;
+        } catch (e) {
+          AppLogger.log('WS bind failed on port $port: $e');
+        }
+      }
       
     } catch (e) {
-      print('Failed to start secure server: $e');
+      AppLogger.log('Failed to start secure server: $e');
       rethrow;
     }
   }
@@ -191,11 +212,14 @@ class SecureChannelService {
     // Check if it's a WebSocket upgrade request
     if (WebSocketTransformer.isUpgradeRequest(request)) {
       try {
+        final remote = request.connectionInfo?.remoteAddress.address;
+        final remotePort = request.connectionInfo?.remotePort;
+        AppLogger.log('🔌 Incoming WS upgrade from $remote:$remotePort ${request.uri.path}');
         final socket = await WebSocketTransformer.upgrade(request);
         final connectionId = _uuid.v4();
         
         _connections[connectionId] = socket;
-        print('New WebSocket connection: $connectionId');
+        AppLogger.log('New WebSocket connection: $connectionId');
         
         // Handle incoming messages
         socket.listen(
@@ -208,7 +232,7 @@ class SecureChannelService {
         _sendHandshake(connectionId);
         
       } catch (e) {
-        print('WebSocket upgrade failed: $e');
+        AppLogger.log('WebSocket upgrade failed: $e');
         request.response.statusCode = HttpStatus.internalServerError;
         request.response.close();
       }
@@ -284,19 +308,21 @@ class SecureChannelService {
           }
       }
     } catch (e) {
-      print('Error handling message: $e');
+      AppLogger.log('Error handling message: $e');
     }
   }
   
   void _handleHandshake(String connectionId, SecureMessage message) {
     final payload = message.payload ?? {};
     final peerId = message.senderId ?? connectionId;
+    AppLogger.log('🤝 Handshake from ${message.senderAlias ?? 'Unknown'} ($peerId)');
     
     // Check password if required
     if (!_settings.acceptWithoutPassword && _settings.connectionPassword != null) {
       final providedPassword = payload['password'] as String?;
       if (providedPassword != _settings.connectionPassword) {
         // Send rejection
+        AppLogger.log('Handshake rejected: invalid password');
         _sendToConnection(connectionId, SecureMessage(
           type: SecureMessageType.handshakeAck,
           senderId: _deviceId,
@@ -336,6 +362,8 @@ class SecureChannelService {
       },
     ));
     
+    AppLogger.log('Handshake accepted for ${peer.alias} ($peerId)');
+    
     // Notify callback
     onPeerConnected?.call(peer);
     
@@ -350,7 +378,7 @@ class SecureChannelService {
     final accepted = payload['accepted'] as bool? ?? false;
     
     if (!accepted) {
-      print('Handshake rejected: ${payload['reason']}');
+      AppLogger.log('Handshake rejected: ${payload['reason']}');
       _connections[connectionId]?.close();
       _connections.remove(connectionId);
       return;
@@ -365,6 +393,7 @@ class SecureChannelService {
         lastSeen: DateTime.now(),
       );
       onPeerConnected?.call(_connectedPeers[connectionId]!);
+      AppLogger.log('Handshake acknowledged for ${peer.alias} (${peer.id})');
     }
   }
   
@@ -447,11 +476,11 @@ class SecureChannelService {
       onPeerDisconnected?.call(peer.id);
     }
     
-    print('Peer disconnected: $connectionId');
+    AppLogger.log('Peer disconnected: $connectionId');
   }
   
   void _handleError(String connectionId, dynamic error) {
-    print('WebSocket error for $connectionId: $error');
+    AppLogger.log('WebSocket error for $connectionId: $error');
     _handleDisconnect(connectionId);
   }
   
@@ -461,7 +490,7 @@ class SecureChannelService {
       try {
         socket.add(message.toJsonString());
       } catch (e) {
-        print('Failed to send to $connectionId: $e');
+        AppLogger.log('Failed to send to $connectionId: $e');
       }
     }
   }
@@ -473,6 +502,7 @@ class SecureChannelService {
     String? password,
   }) async {
     try {
+      AppLogger.log('🔗 Connecting to peer $address:$port');
       final uri = Uri.parse('ws://$address:$port/ws');
       
       // Try WSS first, fallback to WS
@@ -483,7 +513,7 @@ class SecureChannelService {
           customClient: HttpClient()..badCertificateCallback = (_, __, ___) => true,
         ).timeout(const Duration(seconds: 10));
       } catch (e) {
-        print('WSS failed, trying WS: $e');
+        AppLogger.log('WSS failed, trying WS: $e');
         socket = await WebSocket.connect(uri.toString())
             .timeout(const Duration(seconds: 10));
       }
@@ -526,7 +556,7 @@ class SecureChannelService {
       
       return true;
     } catch (e) {
-      print('Failed to connect to peer: $e');
+      AppLogger.log('Failed to connect to peer: $e');
       return false;
     }
   }
@@ -540,7 +570,7 @@ class SecureChannelService {
       // Try to connect and send invitation
       return await connectToPeer(address: address, port: port);
     } catch (e) {
-      print('Failed to send invitation: $e');
+      AppLogger.log('Failed to send invitation: $e');
       return false;
     }
   }
@@ -557,7 +587,7 @@ class SecureChannelService {
   /// Reject an invitation
   void rejectInvitation(PeerInvitation invitation) {
     // No action needed - just don't connect
-    print('Invitation from ${invitation.fromAlias} rejected');
+    AppLogger.log('Invitation from ${invitation.fromAlias} rejected');
   }
   
   /// Send message to specific peer
@@ -568,7 +598,7 @@ class SecureChannelService {
         return;
       }
     }
-    print('Peer not found: $peerId');
+    AppLogger.log('Peer not found: $peerId');
   }
   
   /// Broadcast message to all peers
@@ -603,7 +633,7 @@ class SecureChannelService {
     await _server?.close(force: true);
     _server = null;
     
-    print('Secure channel service stopped');
+    AppLogger.log('Secure channel service stopped');
   }
   
   /// Generate fingerprint for certificate verification

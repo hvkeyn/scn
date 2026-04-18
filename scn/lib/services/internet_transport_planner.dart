@@ -29,40 +29,35 @@ class InternetTransportPlanner {
           controlTransport: PeerTransport.webRtcDataChannel,
           fileTransportMode: InternetFileTransportMode.webRtcDataChannelPlanned,
           summary: 'TURN relay in use',
-          details:
-              'Control traffic already goes through WebRTC. File transfer should migrate to chunked DataChannel instead of assuming direct HTTP reachability.',
+          details: 'Control traffic already goes through WebRTC. File transfer should migrate to chunked DataChannel instead of assuming direct HTTP reachability.',
         );
       case PeerConnectionPath.direct:
         return const InternetTransportPlan(
           controlTransport: PeerTransport.webRtcDataChannel,
           fileTransportMode: InternetFileTransportMode.webRtcDataChannelPlanned,
           summary: 'Direct WebRTC path available',
-          details:
-              'Control traffic is ready on DataChannel. Files can still use legacy HTTP only for trusted LAN/direct reachability during migration.',
+          details: 'Control traffic is ready on DataChannel. Files can still use legacy HTTP only for trusted LAN/direct reachability during migration.',
         );
       case PeerConnectionPath.legacyDirect:
         return const InternetTransportPlan(
           controlTransport: PeerTransport.legacySocket,
           fileTransportMode: InternetFileTransportMode.legacyHttpDirect,
           summary: 'Legacy direct path',
-          details:
-              'This path still relies on direct reachability and should be treated as compatibility mode only.',
+          details: 'This path still relies on direct reachability and should be treated as compatibility mode only.',
         );
       case PeerConnectionPath.lan:
         return const InternetTransportPlan(
           controlTransport: PeerTransport.legacySocket,
           fileTransportMode: InternetFileTransportMode.legacyHttpDirect,
           summary: 'LAN path',
-          details:
-              'Local-network transport remains unchanged and can continue using direct HTTP.',
+          details: 'Local-network transport remains unchanged and can continue using direct HTTP.',
         );
       case PeerConnectionPath.unknown:
         return const InternetTransportPlan(
           controlTransport: PeerTransport.unknown,
           fileTransportMode: InternetFileTransportMode.webRtcDataChannelPlanned,
           summary: 'Transport path not resolved yet',
-          details:
-              'Show diagnostics and wait for ICE completion before promising direct reachability.',
+          details: 'Show diagnostics and wait for ICE completion before promising direct reachability.',
         );
     }
   }

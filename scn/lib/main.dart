@@ -10,6 +10,8 @@ import 'package:scn/providers/send_provider.dart';
 import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/pages/home_page.dart';
+import 'package:scn/services/desktop_integration_service.dart';
+import 'package:scn/widgets/remote_desktop_permission_listener.dart';
 import 'package:scn/utils/process_manager.dart';
 import 'package:scn/utils/test_config.dart';
 import 'package:scn/utils/logger.dart';
@@ -51,6 +53,7 @@ void main(List<String> args) async {
   final sendProvider = SendProvider();
   final chatProvider = ChatProvider();
   final remotePeerProvider = RemotePeerProvider();
+  final desktopIntegrationService = DesktopIntegrationService();
   
   // Initialize services
   final appService = AppService();
@@ -80,6 +83,11 @@ void main(List<String> args) async {
   // Load saved remote peers
   await remotePeerProvider.load();
   
+  // Initialize tray & autostart (skip in test mode)
+  if (!testConfig.isTestMode) {
+    await desktopIntegrationService.init();
+  }
+  
   try {
     // Pass test config port to initialize
     await appService.initialize(port: testConfig.httpPort);
@@ -98,6 +106,11 @@ void main(List<String> args) async {
         ChangeNotifierProvider.value(value: sendProvider),
         ChangeNotifierProvider.value(value: chatProvider),
         ChangeNotifierProvider.value(value: remotePeerProvider),
+        ChangeNotifierProvider.value(value: desktopIntegrationService),
+        ChangeNotifierProvider.value(
+            value: appService.remoteDesktopHostService),
+        ChangeNotifierProvider.value(
+            value: appService.remoteFileHostService),
       ],
       child: const SCNApp(),
     ),
@@ -157,7 +170,7 @@ class SCNApp extends StatelessWidget {
         Locale('en', ''),
         Locale('ru', ''),
       ],
-      home: const HomePage(),
+      home: const RemoteDesktopPermissionListener(child: HomePage()),
     );
   }
 }

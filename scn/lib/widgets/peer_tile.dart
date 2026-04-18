@@ -9,6 +9,7 @@ class PeerTile extends StatelessWidget {
   final VoidCallback? onDisconnect;
   final VoidCallback? onToggleFavorite;
   final VoidCallback? onRemove;
+  final VoidCallback? onRemoteControl;
   
   const PeerTile({
     super.key,
@@ -18,6 +19,7 @@ class PeerTile extends StatelessWidget {
     this.onDisconnect,
     this.onToggleFavorite,
     this.onRemove,
+    this.onRemoteControl,
   });
 
   Color _getStatusColor() {
@@ -279,6 +281,9 @@ class PeerTile extends StatelessWidget {
                           case 'disconnect':
                             onDisconnect?.call();
                             break;
+                          case 'remote_control':
+                            onRemoteControl?.call();
+                            break;
                         }
                       },
                       itemBuilder: (context) => [
@@ -301,6 +306,17 @@ class PeerTile extends StatelessWidget {
                                 Icon(Icons.link_off, size: 18),
                                 SizedBox(width: 8),
                                 Text('Disconnect'),
+                              ],
+                            ),
+                          ),
+                        if (onRemoteControl != null)
+                          const PopupMenuItem(
+                            value: 'remote_control',
+                            child: Row(
+                              children: [
+                                Icon(Icons.desktop_windows, size: 18),
+                                SizedBox(width: 8),
+                                Text('Remote desktop'),
                               ],
                             ),
                           ),

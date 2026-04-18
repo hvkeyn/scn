@@ -23,15 +23,23 @@ class StunService {
   
   /// Get public IP and port using STUN
   Future<NatInfo?> discoverNat({int localPort = 0}) async {
+    final localIp = await _getLocalIpv4();
+    
     // Try STUN servers first
+    NatInfo? primary;
+    NatInfo? secondary;
+    
     for (final server in _publicStunServers) {
       try {
         print('Trying STUN server: $server');
         final result = await _queryStunServer(server, localPort);
         if (result != null) {
-          print('STUN success: ${result.publicIp}:${result.publicPort}');
-          _natInfo = result;
-          return result;
+          if (primary == null) {
+            primary = result;
+            continue;
+          }
+          secondary = result;
+          break;
         }
       } catch (e) {
         print('STUN query failed for $server: $e');
@@ -39,9 +47,21 @@ class StunService {
       }
     }
     
+    if (primary != null) {
+      final natType = _detectNatType(localIp, localPort, primary, secondary);
+      final info = NatInfo(
+        publicIp: primary.publicIp,
+        publicPort: primary.publicPort,
+        natType: natType,
+      );
+      print('STUN success: ${info.publicIp}:${info.publicPort} ($natType)');
+      _natInfo = info;
+      return info;
+    }
+    
     // Fallback to HTTP IP discovery
     print('STUN failed, trying HTTP fallback...');
-    final httpResult = await _discoverViaHttp(localPort);
+    final httpResult = await _discoverViaHttp(localPort, localIp: localIp);
     if (httpResult != null) {
       _natInfo = httpResult;
       return httpResult;
@@ -51,7 +71,7 @@ class StunService {
   }
   
   /// Fallback: Get public IP via HTTP API
-  Future<NatInfo?> _discoverViaHttp(int localPort) async {
+  Future<NatInfo?> _discoverViaHttp(int localPort, {String? localIp}) async {
     final apis = [
       'https://api.ipify.org',
       'https://icanhazip.com',
@@ -75,10 +95,13 @@ class StunService {
           // Validate IP format
           if (RegExp(r'^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$').hasMatch(ip)) {
             print('HTTP success: $ip');
+            final natType = (localIp != null && localIp == ip)
+                ? NatType.openInternet
+                : NatType.portRestricted;
             return NatInfo(
               publicIp: ip,
               publicPort: localPort, // Can't determine port via HTTP
-              natType: NatType.unknown,
+              natType: natType,
             );
           }
         }
@@ -225,17 +248,80 @@ class StunService {
       return NatInfo(
         publicIp: publicIp,
         publicPort: publicPort,
-        natType: _detectNatType(publicIp, publicPort),
+        natType: NatType.unknown,
       );
     }
     
     return null;
   }
   
-  NatType _detectNatType(String publicIp, int publicPort) {
-    // Basic detection - for full detection need multiple STUN queries
-    // This is simplified version
-    return NatType.unknown;
+  NatType _detectNatType(
+    String? localIp,
+    int localPort,
+    NatInfo primary,
+    NatInfo? secondary,
+  ) {
+    // Heuristic detection:
+    // - If local IP equals public IP => no NAT
+    // - If mapping changes between STUN servers => symmetric NAT
+    // - If port preserved => likely full cone
+    // - Otherwise => restricted/port restricted (estimate)
+    if (localIp != null && localIp == primary.publicIp) {
+      return NatType.openInternet;
+    }
+    
+    if (secondary != null) {
+      if (primary.publicIp != secondary.publicIp ||
+          primary.publicPort != secondary.publicPort) {
+        return NatType.symmetric;
+      }
+    }
+    
+    if (localPort > 0 && primary.publicPort == localPort) {
+      return NatType.fullCone;
+    }
+    
+    if (secondary != null) {
+      return NatType.restrictedCone;
+    }
+    
+    return NatType.portRestricted;
+  }
+  
+  Future<String?> _getLocalIpv4() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        type: InternetAddressType.IPv4,
+        includeLinkLocal: false,
+      );
+      String? fallback;
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          if (addr.isLoopback) continue;
+          final ip = addr.address;
+          if (_isPrivateIpv4(ip)) return ip;
+          fallback ??= ip;
+        }
+      }
+      return fallback;
+    } catch (_) {
+      return null;
+    }
+  }
+  
+  bool _isPrivateIpv4(String ip) {
+    if (ip.startsWith('10.')) return true;
+    if (ip.startsWith('192.168.')) return true;
+    if (ip.startsWith('172.')) {
+      final parts = ip.split('.');
+      if (parts.length > 1) {
+        final second = int.tryParse(parts[1]);
+        if (second != null && second >= 16 && second <= 31) {
+          return true;
+        }
+      }
+    }
+    return false;
   }
   
   /// Perform UDP hole punching to establish P2P connection

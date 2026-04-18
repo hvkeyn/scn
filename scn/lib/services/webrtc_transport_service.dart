@@ -20,8 +20,7 @@ class WebRtcTransportService {
   void Function(Map<String, dynamic> message)? onDataMessage;
 
   bool get isConnected =>
-      _peerConnection?.connectionState ==
-      RTCPeerConnectionState.RTCPeerConnectionStateConnected;
+      _peerConnection?.connectionState == RTCPeerConnectionState.RTCPeerConnectionStateConnected;
 
   Future<void> createHostConnection({
     required List<IceServerConfig> iceServers,

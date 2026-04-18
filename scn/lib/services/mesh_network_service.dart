@@ -19,14 +19,10 @@ import 'package:scn/utils/logger.dart';
 class MeshNetworkService {
   final SecureChannelService _secureChannel = SecureChannelService();
   final SignalingService _signalingService = SignalingService();
-  final WebRtcTransportService _webrtcTransportService =
-      WebRtcTransportService();
-  final NetworkDiagnosticsService _networkDiagnosticsService =
-      NetworkDiagnosticsService();
-  final InternetTransportPlanner _transportPlanner =
-      const InternetTransportPlanner();
-  final EmbeddedSignalingServerService _embeddedSignaling =
-      EmbeddedSignalingServerService();
+  final WebRtcTransportService _webrtcTransportService = WebRtcTransportService();
+  final NetworkDiagnosticsService _networkDiagnosticsService = NetworkDiagnosticsService();
+  final InternetTransportPlanner _transportPlanner = const InternetTransportPlanner();
+  final EmbeddedSignalingServerService _embeddedSignaling = EmbeddedSignalingServerService();
 
   RemotePeerProvider? _peerProvider;
   Timer? _reconnectTimer;
@@ -56,6 +52,7 @@ class MeshNetworkService {
   String _dataChannelState = 'closed';
   String? _lastConnectionError;
 
+  // Callbacks
   Function(RemotePeer peer)? onPeerConnected;
   Function(String peerId)? onPeerDisconnected;
   Function(PeerInvitation invitation)? onInvitation;
@@ -101,6 +98,7 @@ class MeshNetworkService {
     );
   }
 
+  /// Start mesh network service
   Future<void> start() async {
     if (_isRunning) return;
 
@@ -112,7 +110,11 @@ class MeshNetworkService {
       _secureChannel.onPeerDisconnected = _handlePeerDisconnected;
       _secureChannel.onInvitation = _handleInvitation;
 
-      await _embeddedSignaling.start(preferredPort: 8787);
+      await _embeddedSignaling.start(
+        preferredPort: _peerProvider?.settings.signalingServerUrl.contains(':8787') == true
+            ? 8787
+            : 8787,
+      );
       _embeddedSignalingStarted = true;
       _embeddedLocalSignalingUrl = _embeddedSignaling.localBaseUrl;
       _refreshAdvertisedSignalingUrl();
@@ -137,12 +139,10 @@ class MeshNetworkService {
   }
 
   void _configureCallbacks() {
-    _signalingSubscription ??=
-        _signalingService.events.listen(_handleSignalingEvent);
+    _signalingSubscription ??= _signalingService.events.listen(_handleSignalingEvent);
     _webrtcTransportService.onLocalOffer = _signalingService.sendOffer;
     _webrtcTransportService.onLocalAnswer = _signalingService.sendAnswer;
-    _webrtcTransportService.onLocalIceCandidate =
-        _signalingService.sendIceCandidate;
+    _webrtcTransportService.onLocalIceCandidate = _signalingService.sendIceCandidate;
     _webrtcTransportService.onConnectionPathChanged = (path) {
       _activeConnectionPath = path;
       _updateActivePeerDetails();
@@ -292,18 +292,13 @@ class MeshNetworkService {
     if (provider == null) return;
 
     final disconnectedFavorites = provider.favoritePeers
-        .where(
-          (peer) =>
-              peer.status == PeerStatus.disconnected &&
-              peer.type == PeerType.remote,
-        )
+        .where((peer) => peer.status == PeerStatus.disconnected && peer.type == PeerType.remote)
         .toList();
 
     for (final peer in disconnectedFavorites) {
       if (peer.sessionId != null && peer.signalingServerUrl != null) {
-        AppLogger.log(
-          'Skipping auto-reconnect for signaling peer without fresh invite: ${peer.alias}',
-        );
+        // Missing join token after restart means we cannot auto-rejoin safely.
+        AppLogger.log('Skipping auto-reconnect for signaling peer without fresh invite: ${peer.alias}');
         continue;
       }
       _connectToPeer(peer);
@@ -370,18 +365,13 @@ class MeshNetworkService {
         break;
       case SignalingMessageType.ready:
         _activePeerId = envelope.payload['peerId'] as String? ?? _activePeerId;
-        _activePeerAlias =
-            envelope.payload['alias'] as String? ?? _activePeerAlias;
+        _activePeerAlias = envelope.payload['alias'] as String? ?? _activePeerAlias;
         _setStage('ready', 'Peer is ready for WebRTC negotiation');
         break;
       case SignalingMessageType.peerJoined:
         _activePeerId = envelope.payload['peerId'] as String? ?? _activePeerId;
-        _activePeerAlias =
-            envelope.payload['alias'] as String? ?? _activePeerAlias;
-        _setStage(
-          'offer',
-          'Peer joined signaling session, creating WebRTC offer',
-        );
+        _activePeerAlias = envelope.payload['alias'] as String? ?? _activePeerAlias;
+        _setStage('offer', 'Peer joined signaling session, creating WebRTC offer');
         await _webrtcTransportService.createHostConnection(
           iceServers: _currentIceServers,
           preferRelay: provider.settings.preferRelay,
@@ -486,6 +476,7 @@ class MeshNetworkService {
     AppLogger.log('Received invitation from: ${invitation.fromAlias}');
   }
 
+  /// Connect to a remote peer by address
   Future<bool> connectToAddress({
     required String address,
     int port = 53318,
@@ -509,6 +500,7 @@ class MeshNetworkService {
     }
   }
 
+  /// Disconnect from a specific peer
   void disconnectPeer(String peerId) {
     RemotePeer? peer;
     final provider = _peerProvider;
@@ -533,19 +525,19 @@ class MeshNetworkService {
     _peerProvider?.updatePeerStatus(peerId, PeerStatus.disconnected);
   }
 
-  Future<bool> acceptInvitation(
-    PeerInvitation invitation, {
-    String? password,
-  }) async {
+  /// Accept an invitation
+  Future<bool> acceptInvitation(PeerInvitation invitation, {String? password}) async {
     _peerProvider?.removeInvitation(invitation.id);
     return _secureChannel.acceptInvitation(invitation, password: password);
   }
 
+  /// Reject an invitation
   void rejectInvitation(PeerInvitation invitation) {
     _secureChannel.rejectInvitation(invitation);
     _peerProvider?.removeInvitation(invitation.id);
   }
 
+  /// Send data to a specific peer
   void sendToPeer(String peerId, Map<String, dynamic> data) {
     RemotePeer? webRtcPeer;
     final provider = _peerProvider;
@@ -557,8 +549,7 @@ class MeshNetworkService {
         }
       }
     }
-    if (webRtcPeer != null &&
-        webRtcPeer.transport == PeerTransport.webRtcDataChannel) {
+    if (webRtcPeer != null && webRtcPeer.transport == PeerTransport.webRtcDataChannel) {
       _webrtcTransportService.sendJson(data);
       return;
     }
@@ -574,6 +565,7 @@ class MeshNetworkService {
     );
   }
 
+  /// Broadcast data to all connected peers
   void broadcast(Map<String, dynamic> data) {
     _secureChannel.broadcast(
       SecureMessage(
@@ -585,6 +577,7 @@ class MeshNetworkService {
     );
   }
 
+  /// Update settings
   void updateSettings(NetworkSettings settings) {
     _secureChannel.setSettings(settings);
     _refreshAdvertisedSignalingUrl();
@@ -652,8 +645,7 @@ class MeshNetworkService {
 
     final seen = <String>{};
     return merged.where((server) {
-      final key =
-          '${server.urls.join(',')}|${server.username}|${server.credential}';
+      final key = '${server.urls.join(',')}|${server.username}|${server.credential}';
       return seen.add(key);
     }).toList();
   }
@@ -733,6 +725,7 @@ class MeshNetworkService {
     onStateChanged?.call();
   }
 
+  /// Stop server and all WAN transports.
   Future<void> stop() async {
     _reconnectTimer?.cancel();
     _reconnectTimer = null;
