@@ -348,27 +348,19 @@ class RemoteDesktopHostService extends ChangeNotifier {
       });
       session.pc = pc;
 
-      final dynamic videoConstraints = _settings.defaultFps > 0
-          ? <String, dynamic>{
-              'mandatory': <String, dynamic>{
-                'minFrameRate': _settings.defaultFps,
-                'maxFrameRate': _settings.defaultFps,
-              },
-              'optional': const <Map<String, dynamic>>[],
-            }
-          : true;
+      // На Windows/Linux/macOS flutter_webrtc требует, чтобы источник
+      // экрана был получен через desktopCapturer.getSources() и его deviceId
+      // явно передавался в getDisplayMedia. Без этого нативная часть падает с
+      // "Unable to getDisplayMedia: source not found!".
       MediaStream stream;
       try {
-        stream = await navigator.mediaDevices.getDisplayMedia({
-          'video': videoConstraints,
-          'audio': session.grantsAudio,
-        });
+        stream = await _captureScreenStream(session);
       } catch (e, st) {
-        AppLogger.log('RD host: getDisplayMedia failed: $e\n$st');
-        await _failSession(session,
-            'Не удалось захватить экран хоста: $e\n'
-            'Если на хосте появилось окно выбора экрана/окна — нужно было '
-            'выбрать источник, а не закрывать диалог.');
+        AppLogger.log('RD host: screen capture failed: $e\n$st');
+        await _failSession(
+            session,
+            'Не удалось захватить экран хоста: $e',
+            st);
         return;
       }
 
@@ -475,9 +467,97 @@ class RemoteDesktopHostService extends ChangeNotifier {
       _startStatsTimer(session);
     } catch (e, st) {
       AppLogger.log('Failed to start RD host media: $e\n$st');
-      await _failSession(session,
-          'Внутренняя ошибка при запуске стриминга экрана: $e');
+      await _failSession(
+          session,
+          'Внутренняя ошибка при запуске стриминга экрана: $e',
+          st);
     }
+  }
+
+  /// Захватывает экран хоста.
+  ///
+  /// flutter_webrtc на Windows/Linux/macOS требует, чтобы источник экрана
+  /// сначала был получен через [desktopCapturer.getSources], а его id
+  /// передавался в [getDisplayMedia] в виде `chromeMediaSource` /
+  /// `sourceId`. Вызов `getDisplayMedia({'video': true})` напрямую падает с
+  /// `Unable to getDisplayMedia: source not found!`.
+  Future<MediaStream> _captureScreenStream(_HostSession session) async {
+    final fps = _settings.defaultFps > 0 ? _settings.defaultFps : 30;
+    AppLogger.log('RD host: enumerating desktop sources (fps=$fps)…');
+
+    List<DesktopCapturerSource> sources;
+    try {
+      sources = await desktopCapturer
+          .getSources(types: [SourceType.Screen]);
+    } catch (e, st) {
+      AppLogger.log('RD host: desktopCapturer.getSources failed: $e\n$st');
+      rethrow;
+    }
+    AppLogger.log(
+        'RD host: desktop sources: ${sources.map((s) => '${s.id}:${s.name}').join(', ')}');
+
+    if (sources.isEmpty) {
+      throw StateError(
+          'desktopCapturer вернул 0 источников Screen. '
+          'Проверь, что приложение запущено на машине с дисплеем '
+          '(не в headless RDP-сессии без активного входа).');
+    }
+    final source = sources.first;
+
+    // Сначала пробуем нативный Windows/Linux/macOS путь через chromeMediaSource.
+    final Map<String, dynamic> nativeConstraints = {
+      'audio': false,
+      'video': {
+        'mandatory': {
+          'chromeMediaSource': 'desktop',
+          'chromeMediaSourceId': source.id,
+          'maxFrameRate': fps,
+          'minFrameRate': fps,
+        },
+        'optional': const <Map<String, dynamic>>[],
+      },
+    };
+    try {
+      AppLogger.log(
+          'RD host: getDisplayMedia (native) sourceId=${source.id}…');
+      final stream =
+          await navigator.mediaDevices.getDisplayMedia(nativeConstraints);
+      if (stream.getVideoTracks().isNotEmpty) return stream;
+      AppLogger.log(
+          'RD host: native getDisplayMedia returned 0 video tracks, trying fallback');
+      try {
+        await stream.dispose();
+      } catch (_) {}
+    } catch (e, st) {
+      AppLogger.log(
+          'RD host: native getDisplayMedia failed: $e\n$st — trying fallback');
+    }
+
+    // Fallback: deviceId.exact (web-style) — иногда срабатывает на новых
+    // версиях flutter_webrtc.
+    final Map<String, dynamic> fallbackConstraints = {
+      'audio': false,
+      'video': {
+        'deviceId': {'exact': source.id},
+        'mandatory': {
+          'maxFrameRate': fps,
+          'minFrameRate': fps,
+        },
+      },
+    };
+    AppLogger.log(
+        'RD host: getDisplayMedia (deviceId.exact) sourceId=${source.id}…');
+    final stream =
+        await navigator.mediaDevices.getDisplayMedia(fallbackConstraints);
+    if (stream.getVideoTracks().isEmpty) {
+      try {
+        await stream.dispose();
+      } catch (_) {}
+      throw StateError(
+          'getDisplayMedia вернул поток без видео-треков для источника '
+          '${source.id} (${source.name}).');
+    }
+    return stream;
   }
 
   /// Аварийное завершение сессии: отправляет error-сигнал клиенту с
