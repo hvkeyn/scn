@@ -53,6 +53,13 @@ class _HostSession {
   /// не блокировать новые запросы.
   Timer? wsConnectWatchdog;
 
+  /// Кнопки мыши, которые сейчас удерживаются viewer'ом. Нужно для аварийного
+  /// release при дисконнекте, чтобы кнопка не "залипла" на хосте.
+  final Set<RemoteMouseButton> heldMouseButtons = <RemoteMouseButton>{};
+
+  /// Логические клавиши, которые сейчас удерживаются viewer'ом.
+  final Set<int> heldKeys = <int>{};
+
   _HostSession({
     required this.sessionId,
     required this.sessionToken,
@@ -667,10 +674,60 @@ class RemoteDesktopHostService extends ChangeNotifier {
     try {
       final json = jsonDecode(jsonText) as Map<String, dynamic>;
       final event = RemoteInputEvent.fromJson(json);
+      _trackHeldInput(session, event);
       _inputInjector.inject(event);
     } catch (e) {
       AppLogger.log('RD input parse error: $e');
     }
+  }
+
+  /// Запоминает удерживаемые мышью кнопки и нажатые клавиши, чтобы при
+  /// разрыве сессии можно было их корректно отжать (иначе на удалённой
+  /// машине останется залипшая клавиша/кнопка).
+  void _trackHeldInput(_HostSession session, RemoteInputEvent event) {
+    switch (event.kind) {
+      case RemoteInputEventKind.mouseDown:
+        if (event.button != null) session.heldMouseButtons.add(event.button!);
+        break;
+      case RemoteInputEventKind.mouseUp:
+        if (event.button != null) session.heldMouseButtons.remove(event.button!);
+        break;
+      case RemoteInputEventKind.keyDown:
+        if (event.keyCode != null) session.heldKeys.add(event.keyCode!);
+        break;
+      case RemoteInputEventKind.keyUp:
+        if (event.keyCode != null) session.heldKeys.remove(event.keyCode!);
+        break;
+      default:
+        break;
+    }
+  }
+
+  /// Аварийно отжимает всё, что удерживалось viewer'ом, чтобы на хосте не
+  /// зависла клавиша/кнопка после внезапного дисконнекта.
+  void _releaseAllHeldInput(_HostSession session) {
+    if (!_inputInjector.isAvailable) return;
+    final ts = DateTime.now().microsecondsSinceEpoch;
+    for (final btn in session.heldMouseButtons.toList()) {
+      try {
+        _inputInjector.inject(RemoteInputEvent(
+          kind: RemoteInputEventKind.mouseUp,
+          button: btn,
+          timestampUs: ts,
+        ));
+      } catch (_) {}
+    }
+    session.heldMouseButtons.clear();
+    for (final code in session.heldKeys.toList()) {
+      try {
+        _inputInjector.inject(RemoteInputEvent(
+          kind: RemoteInputEventKind.keyUp,
+          keyCode: code,
+          timestampUs: ts,
+        ));
+      } catch (_) {}
+    }
+    session.heldKeys.clear();
   }
 
   Future<void> _applyQualityChange(
@@ -865,6 +922,9 @@ class RemoteDesktopHostService extends ChangeNotifier {
     session.statsTimer?.cancel();
     session.wsConnectWatchdog?.cancel();
     session.wsConnectWatchdog = null;
+    // Безопасность: viewer мог упасть, удерживая кнопку/клавишу. Без явного
+    // release они "залипнут" на хосте.
+    _releaseAllHeldInput(session);
     try {
       session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
         type: RemoteDesktopSignalType.bye,
