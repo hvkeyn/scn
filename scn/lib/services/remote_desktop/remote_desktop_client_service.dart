@@ -214,15 +214,22 @@ class RemoteDesktopClientService extends ChangeNotifier {
         ));
         break;
       case RemoteDesktopSignalType.bye:
+        final reason = signal.payload['reason']?.toString();
+        final remoteStatus = signal.payload['status']?.toString();
         AppLogger.log('RD client: received bye from host '
-            '(gotVideo=$_gotVideoTrack)');
-        if (!_gotVideoTrack && !_peerEverConnected) {
+            '(gotVideo=$_gotVideoTrack, status=$remoteStatus, reason=$reason)');
+        if (reason != null && reason.isNotEmpty) {
+          _emitError('Хост сообщил причину закрытия:\n$reason');
+        } else if (!_gotVideoTrack && !_peerEverConnected) {
           _emitError(
               'Хост завершил сессию до старта видеопотока. '
               'Скорее всего на хосте либо отменили выбор экрана, '
               'либо захват экрана не удался.');
         }
-        await _shutdown(RemoteDesktopSessionStatus.closed);
+        final status = remoteStatus == 'failed'
+            ? RemoteDesktopSessionStatus.failed
+            : RemoteDesktopSessionStatus.closed;
+        await _shutdown(status, error: reason);
         break;
       case RemoteDesktopSignalType.stats:
         final p = signal.payload;

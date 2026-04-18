@@ -345,9 +345,15 @@ class RemotePeerProvider extends ChangeNotifier {
   }
 
   Future<void> setRemoteDesktopEnabled(bool enabled) async {
+    // Не трогаем существующий пароль и не генерируем новый автоматически —
+    // пароль задаёт оператор сам через UI ("Set/Change password" /
+    // "Generate"). Если пароль не задан, а режим passwordOnly — переводим в
+    // passwordOrPrompt, чтобы хост был доступен через подтверждение.
     var rd = _settings.remoteDesktop.copyWith(enabled: enabled);
-    if (enabled && (rd.password == null || rd.password!.isEmpty)) {
-      rd = rd.copyWith(password: _generateRandomPassword(8));
+    if (enabled &&
+        (rd.password == null || rd.password!.isEmpty) &&
+        rd.accessMode == RemoteDesktopAccessMode.passwordOnly) {
+      rd = rd.copyWith(accessMode: RemoteDesktopAccessMode.passwordOrPrompt);
     }
     await updateRemoteDesktopSettings(rd);
   }
