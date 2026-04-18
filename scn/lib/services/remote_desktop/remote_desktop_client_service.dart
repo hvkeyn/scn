@@ -328,12 +328,13 @@ class RemoteDesktopClientService extends ChangeNotifier {
       );
     }
 
-    // Создаём DataChannel для input.
+    // Создаём reliable DataChannel для input.
+    // ВАЖНО: для key/mouse событий канал должен быть надёжным, иначе
+    // потерянное keyDown без последующего keyUp оставит клавишу
+    // "залипшей" на хосте. Поэтому: ordered=true, без maxRetransmits.
     final channel = await pc.createDataChannel(
       'scn-rd-input',
-      RTCDataChannelInit()
-        ..ordered = true
-        ..maxRetransmits = 0,
+      RTCDataChannelInit()..ordered = true,
     );
     _inputChannel = channel;
 

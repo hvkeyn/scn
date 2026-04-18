@@ -372,8 +372,8 @@ class RemoteDesktopSettings {
     this.shareAudio = false,
     this.viewOnlyByDefault = false,
     this.trustedPeerIds = const [],
-    this.defaultVideoBitrateKbps = 0,
-    this.defaultFps = 0,
+    this.defaultVideoBitrateKbps = 8000,
+    this.defaultFps = 30,
     this.preferredVideoCodec = 'auto',
     this.fileManagerEnabled = true,
     this.fileManagerReadOnly = false,
@@ -442,8 +442,8 @@ class RemoteDesktopSettings {
               ?.map((e) => e.toString())
               .toList() ??
           const [],
-      defaultVideoBitrateKbps: json['defaultVideoBitrateKbps'] as int? ?? 0,
-      defaultFps: json['defaultFps'] as int? ?? 0,
+      defaultVideoBitrateKbps: json['defaultVideoBitrateKbps'] as int? ?? 8000,
+      defaultFps: json['defaultFps'] as int? ?? 30,
       preferredVideoCodec: json['preferredVideoCodec'] as String? ?? 'auto',
       fileManagerEnabled: json['fileManagerEnabled'] as bool? ?? true,
       fileManagerReadOnly: json['fileManagerReadOnly'] as bool? ?? false,

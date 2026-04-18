@@ -48,6 +48,11 @@ class _HostSession {
   /// Сторона хоста ждёт подтверждения от UI; completer ставится в null после resolve.
   Completer<bool>? approvalCompleter;
 
+  /// Watchdog: если viewer не подключился по WS в течение N секунд после
+  /// approval, сессия считается зависшей и автоматически закрывается, чтобы
+  /// не блокировать новые запросы.
+  Timer? wsConnectWatchdog;
+
   _HostSession({
     required this.sessionId,
     required this.sessionToken,
@@ -132,18 +137,13 @@ class RemoteDesktopHostService extends ChangeNotifier {
       );
     }
 
-    if (hasActiveSession) {
-      return shelf.Response(409,
-          body: jsonEncode(const RemoteDesktopRequestResponse(
-            status: RemoteDesktopRequestStatus.busy,
-            errorMessage: 'Host is already serving another session',
-          ).toJson()),
-          headers: {'Content-Type': 'application/json'});
-    }
-
-    Map<String, dynamic> body;
+    // Если уже есть зависшая сессия от ТОГО ЖЕ viewer'а (он повторно жмёт
+    // Connect, не успев увидеть, что предыдущая в negotiating) — закрываем
+    // её, чтобы не словить ложный 409.
+    Map<String, dynamic>? earlyBody;
     try {
-      body = jsonDecode(await request.readAsString()) as Map<String, dynamic>;
+      earlyBody =
+          jsonDecode(await request.readAsString()) as Map<String, dynamic>;
     } catch (_) {
       return shelf.Response.badRequest(
         body: jsonEncode(const RemoteDesktopRequestResponse(
@@ -153,8 +153,30 @@ class RemoteDesktopHostService extends ChangeNotifier {
         headers: {'Content-Type': 'application/json'},
       );
     }
+    final earlyReq = RemoteDesktopRequest.fromJson(earlyBody);
 
-    final req = RemoteDesktopRequest.fromJson(body);
+    final stale = _sessions.values
+        .where((s) =>
+            s.viewerDeviceId == earlyReq.viewerDeviceId &&
+            s.status != RemoteDesktopSessionStatus.streaming)
+        .toList();
+    for (final s in stale) {
+      AppLogger.log(
+          'RD host: dropping stale session ${s.sessionId} (status=${s.status}) '
+          'for viewer ${s.viewerDeviceId} due to new request');
+      await _terminate(s, RemoteDesktopSessionStatus.closed);
+    }
+
+    if (hasActiveSession) {
+      return shelf.Response(409,
+          body: jsonEncode(const RemoteDesktopRequestResponse(
+            status: RemoteDesktopRequestStatus.busy,
+            errorMessage: 'Host is already serving another session',
+          ).toJson()),
+          headers: {'Content-Type': 'application/json'});
+    }
+
+    final req = earlyReq;
 
     final viewerAddress = _peerAddressFromRequest(request);
     RemoteDesktopAuthMode? authMode;
@@ -233,6 +255,18 @@ class RemoteDesktopHostService extends ChangeNotifier {
     session.status = RemoteDesktopSessionStatus.negotiating;
     notifyListeners();
 
+    // Watchdog: если viewer не успел открыть WS / упал — не блокируем хост
+    // навсегда. Через 20с зависшая сессия будет автоматически закрыта.
+    session.wsConnectWatchdog =
+        Timer(const Duration(seconds: 20), () async {
+      if (_sessions[sessionId] != null && session.ws == null) {
+        AppLogger.log(
+            'RD host: watchdog dropping session $sessionId — viewer never connected WS');
+        await _terminate(session, RemoteDesktopSessionStatus.failed,
+            error: 'Viewer did not open WebSocket within 20 seconds');
+      }
+    });
+
     return shelf.Response.ok(
       jsonEncode(RemoteDesktopRequestResponse(
         status: RemoteDesktopRequestStatus.accepted,
@@ -293,6 +327,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
             }
             session = found;
             session!.ws = ws;
+            session!.wsConnectWatchdog?.cancel();
+            session!.wsConnectWatchdog = null;
             await _startHostMedia(session!);
             return;
           }
@@ -827,6 +863,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
     session.status = status;
     session.errorMessage = error;
     session.statsTimer?.cancel();
+    session.wsConnectWatchdog?.cancel();
+    session.wsConnectWatchdog = null;
     try {
       session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
         type: RemoteDesktopSignalType.bye,
