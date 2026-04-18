@@ -38,7 +38,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     _errorSub = _client.errors.listen((msg) {
       if (!mounted) return;
       setState(() {
-        _error = msg;
+        // Накапливаем сообщения, чтобы пользователь видел всю историю
+        // (например, сначала ICE failed, затем bye от хоста).
+        _error = _error == null ? msg : '$_error\n\n$msg';
         _connecting = false;
       });
     });
@@ -325,6 +327,38 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     }
     if (!_client.isVideoReady) {
       return const SizedBox.shrink();
+    }
+
+    final session = _client.session;
+    final closedWithoutVideo = session != null &&
+        (session.status == RemoteDesktopSessionStatus.closed ||
+            session.status == RemoteDesktopSessionStatus.failed) &&
+        _client.videoRenderer.srcObject == null;
+    if (closedWithoutVideo) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.tv_off, size: 48, color: Colors.white54),
+              const SizedBox(height: 12),
+              Text(
+                session.errorMessage ??
+                    'Хост закрыл сессию до того, как пошёл видеопоток.\n'
+                        'Проверь на хост-машине окно выбора экрана и логи.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white),
+              ),
+              const SizedBox(height: 16),
+              FilledButton(
+                onPressed: () => Navigator.of(context).maybePop(),
+                child: const Text('Close'),
+              ),
+            ],
+          ),
+        ),
+      );
     }
 
     Widget videoView = RTCVideoView(
