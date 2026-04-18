@@ -31,6 +31,12 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   bool _captureKeyboard = true;
   Offset? _lastSentMove;
 
+  /// Битмаска кнопок мыши, которые сейчас удержаны (kPrimaryMouseButton и т.п.).
+  /// Нужно для корректного mouseUp: PointerUpEvent.buttons всегда 0,
+  /// поэтому без явного трекинга мы не знаем, какую именно кнопку отпускать.
+  int _pressedMouseButtons = 0;
+  bool _disconnecting = false;
+
   @override
   void initState() {
     super.initState();
@@ -65,13 +71,53 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     setState(() {});
   }
 
+  /// Полное завершение сессии перед уходом со страницы. Отжимает все
+  /// удержанные клавиши/кнопки и async-ом закрывает WS, чтобы хост
+  /// получил bye и очистил сессию (иначе ловим "Host is already serving").
+  Future<void> _gracefulShutdown() async {
+    if (_disconnecting) return;
+    _disconnecting = true;
+    _releaseAllInput();
+    try {
+      await _client.disconnect();
+    } catch (_) {}
+  }
+
   @override
   void dispose() {
     _errorSub?.cancel();
     _focusNode.dispose();
     _client.removeListener(_onClientChange);
+    // Если пользователь успел нажать back и не дождался graceful shutdown,
+    // всё равно отправляем bye, отжимаем кнопки и чистим клиент.
+    _releaseAllInput();
     _client.dispose();
     super.dispose();
+  }
+
+  /// Отправить mouseUp/keyUp для всего, что сейчас нажато. Вызывать перед
+  /// закрытием страницы, переключением controlActive в false, потерей фокуса
+  /// и т.п. — иначе мышь/клавиша "залипнет" на удалённой машине.
+  void _releaseAllInput() {
+    if (_pressedMouseButtons != 0) {
+      const buttonBits = [
+        kPrimaryMouseButton,
+        kSecondaryMouseButton,
+        kMiddleMouseButton,
+        kBackMouseButton,
+        kForwardMouseButton,
+      ];
+      for (final b in buttonBits) {
+        if ((_pressedMouseButtons & b) != 0) {
+          _client.sendInputEvent(RemoteInputEvent(
+            kind: RemoteInputEventKind.mouseUp,
+            button: _mapButton(b),
+            timestampUs: DateTime.now().microsecondsSinceEpoch,
+          ));
+        }
+      }
+      _pressedMouseButtons = 0;
+    }
   }
 
   // ---------- input forwarding ----------
@@ -108,26 +154,65 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
 
   void _sendButton(PointerDownEvent ev) {
     if (!_controlActive) return;
+    // Отправляем mouseDown ТОЛЬКО для тех кнопок, которые именно сейчас стали
+    // нажатыми (новые в маске). Потом запоминаем актуальную маску.
+    final newlyPressed = ev.buttons & ~_pressedMouseButtons;
+    _pressedMouseButtons = ev.buttons;
+    if (newlyPressed == 0) return;
     final n = _normalize(ev.localPosition);
-    _client.sendInputEvent(RemoteInputEvent(
-      kind: RemoteInputEventKind.mouseDown,
-      x: n?.dx,
-      y: n?.dy,
-      button: _mapButton(ev.buttons),
-      timestampUs: DateTime.now().microsecondsSinceEpoch,
-    ));
+    final ts = DateTime.now().microsecondsSinceEpoch;
+    for (final b in const [
+      kPrimaryMouseButton,
+      kSecondaryMouseButton,
+      kMiddleMouseButton,
+      kBackMouseButton,
+      kForwardMouseButton,
+    ]) {
+      if ((newlyPressed & b) != 0) {
+        _client.sendInputEvent(RemoteInputEvent(
+          kind: RemoteInputEventKind.mouseDown,
+          x: n?.dx,
+          y: n?.dy,
+          button: _mapButton(b),
+          timestampUs: ts,
+        ));
+      }
+    }
   }
 
   void _sendButtonUp(PointerUpEvent ev) {
     if (!_controlActive) return;
+    // PointerUpEvent.buttons после Up почти всегда 0; считаем "разницу" —
+    // именно те битовые позиции, которые ушли из удерживаемых, и отжимаем их.
+    final released = _pressedMouseButtons & ~ev.buttons;
+    _pressedMouseButtons = ev.buttons;
+    if (released == 0) return;
     final n = _normalize(ev.localPosition);
-    _client.sendInputEvent(RemoteInputEvent(
-      kind: RemoteInputEventKind.mouseUp,
-      x: n?.dx,
-      y: n?.dy,
-      button: _mapButton(ev.buttons == 0 ? kPrimaryMouseButton : ev.buttons),
-      timestampUs: DateTime.now().microsecondsSinceEpoch,
-    ));
+    final ts = DateTime.now().microsecondsSinceEpoch;
+    for (final b in const [
+      kPrimaryMouseButton,
+      kSecondaryMouseButton,
+      kMiddleMouseButton,
+      kBackMouseButton,
+      kForwardMouseButton,
+    ]) {
+      if ((released & b) != 0) {
+        _client.sendInputEvent(RemoteInputEvent(
+          kind: RemoteInputEventKind.mouseUp,
+          x: n?.dx,
+          y: n?.dy,
+          button: _mapButton(b),
+          timestampUs: ts,
+        ));
+      }
+    }
+  }
+
+  /// PointerCancelEvent: фокус ушёл со страницы / pointer уехал за окно.
+  /// Отжимаем всё, чтобы не было залипших кнопок на удалённой машине.
+  void _sendButtonCancel(PointerCancelEvent ev) {
+    if (_pressedMouseButtons == 0) return;
+    _releaseAllInput();
   }
 
   void _sendScroll(PointerSignalEvent ev) {
@@ -214,26 +299,39 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   @override
   Widget build(BuildContext context) {
     final session = _client.session;
-    return Scaffold(
-      backgroundColor: Colors.black,
-      appBar: AppBar(
-        backgroundColor: Colors.black87,
-        foregroundColor: Colors.white,
-        title: Text('Remote: ${widget.params.host}',
-            style: const TextStyle(fontSize: 14)),
-        actions: _toolbarActions(session),
-      ),
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          _buildVideoArea(),
-          if (_showStats && session?.stats != null)
-            Positioned(
-              left: 16,
-              bottom: 16,
-              child: _StatsPanel(stats: session!.stats!),
-            ),
-        ],
+    return PopScope(
+      // Перехватываем системный back / AppBar leading: сначала корректно
+      // отключаемся (отжимаем кнопки + bye на хост + закрываем WS), и только
+      // потом закрываем страницу. Без этого на хосте оставалась зависшая
+      // negotiating-сессия и при повторном Connect ловили "Host is already
+      // serving another session".
+      canPop: false,
+      onPopInvokedWithResult: (didPop, _) async {
+        if (didPop) return;
+        await _gracefulShutdown();
+        if (mounted) Navigator.of(context).pop();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        appBar: AppBar(
+          backgroundColor: Colors.black87,
+          foregroundColor: Colors.white,
+          title: Text('Remote: ${widget.params.host}',
+              style: const TextStyle(fontSize: 14)),
+          actions: _toolbarActions(session),
+        ),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            _buildVideoArea(),
+            if (_showStats && session?.stats != null)
+              Positioned(
+                left: 16,
+                bottom: 16,
+                child: _StatsPanel(stats: session!.stats!),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -252,6 +350,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
           value: _controlActive,
           onChanged: allowed
               ? (v) {
+                  if (!v) _releaseAllInput();
                   setState(() => _controlActive = v);
                   if (v) _focusNode.requestFocus();
                 }
@@ -282,7 +381,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
         tooltip: 'Disconnect',
         icon: const Icon(Icons.logout),
         onPressed: () async {
-          await _client.disconnect();
+          await _gracefulShutdown();
           if (mounted) Navigator.of(context).maybePop();
         },
       ),
@@ -375,6 +474,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
           behavior: HitTestBehavior.opaque,
           onPointerDown: _sendButton,
           onPointerUp: _sendButtonUp,
+          onPointerCancel: _sendButtonCancel,
           onPointerMove: (e) => _sendMove(e.localPosition),
           onPointerSignal: _sendScroll,
           child: videoView,
