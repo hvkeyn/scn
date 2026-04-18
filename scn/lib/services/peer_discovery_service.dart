@@ -1,6 +1,5 @@
 import 'dart:convert';
 import 'dart:math';
-import 'package:flutter/foundation.dart';
 import 'package:crypto/crypto.dart';
 import 'package:scn/services/stun_service.dart';
 
@@ -59,7 +58,7 @@ class PeerDiscoveryService {
       // Fallback to base64 format
       return _parseBase64Code(trimmed);
     } catch (e) {
-      debugPrint('Failed to parse invite code: $e');
+      print('Failed to parse invite code: $e');
       return null;
     }
   }
@@ -104,7 +103,7 @@ class PeerDiscoveryService {
       natType: NatType.unknown,
     );
   }
-
+  
   InviteCode? _parseShortCode(String code) {
     final sessionMatch = RegExp(r'^(.+?)@session:([^#]+)(?:#(.+))?$').firstMatch(code);
     if (sessionMatch != null) {

@@ -55,7 +55,7 @@ Result will be in `scn-release/` folder.
 
 ## Project Structure
 
-```text
+```
 lib/
 ├── main.dart              - Application entry point
 ├── services/              - Services

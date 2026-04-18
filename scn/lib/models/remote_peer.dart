@@ -1,5 +1,7 @@
 import 'dart:convert';
 
+import 'package:scn/models/remote_desktop_models.dart';
+
 /// Remote peer connection type
 enum PeerType {
   local,   // Discovered via multicast (LAN)
@@ -176,6 +178,7 @@ class NetworkSettings {
   final bool enableLegacyDirect;   // Allow old IP:port direct path as fallback
   final List<String> stunServers;  // STUN servers used for ICE
   final List<String> turnServers;  // TURN URLs used as fallback
+  final RemoteDesktopSettings remoteDesktop; // Настройки удалённого рабочего стола
   
   const NetworkSettings({
     this.meshEnabled = true,
@@ -192,6 +195,7 @@ class NetworkSettings {
       'stun:stun.cloudflare.com:3478',
     ],
     this.turnServers = const [],
+    this.remoteDesktop = const RemoteDesktopSettings(),
   });
   
   NetworkSettings copyWith({
@@ -205,6 +209,7 @@ class NetworkSettings {
     bool? enableLegacyDirect,
     List<String>? stunServers,
     List<String>? turnServers,
+    RemoteDesktopSettings? remoteDesktop,
   }) {
     return NetworkSettings(
       meshEnabled: meshEnabled ?? this.meshEnabled,
@@ -217,6 +222,7 @@ class NetworkSettings {
       enableLegacyDirect: enableLegacyDirect ?? this.enableLegacyDirect,
       stunServers: stunServers ?? this.stunServers,
       turnServers: turnServers ?? this.turnServers,
+      remoteDesktop: remoteDesktop ?? this.remoteDesktop,
     );
   }
   
@@ -231,6 +237,7 @@ class NetworkSettings {
     'enableLegacyDirect': enableLegacyDirect,
     'stunServers': stunServers,
     'turnServers': turnServers,
+    'remoteDesktop': remoteDesktop.toJson(),
   };
   
   factory NetworkSettings.fromJson(Map<String, dynamic> json) {
@@ -255,6 +262,10 @@ class NetworkSettings {
               ?.map((e) => e.toString())
               .toList() ??
           const [],
+      remoteDesktop: json['remoteDesktop'] is Map<String, dynamic>
+          ? RemoteDesktopSettings.fromJson(
+              json['remoteDesktop'] as Map<String, dynamic>)
+          : const RemoteDesktopSettings(),
     );
   }
 }

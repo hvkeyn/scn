@@ -4,6 +4,8 @@ import 'package:shelf/shelf.dart';
 import 'package:shelf/shelf_io.dart' as shelf_io;
 import 'package:shelf_router/shelf_router.dart';
 import 'package:scn/services/file_service.dart';
+import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
+import 'package:scn/services/remote_desktop/remote_file_host_service.dart';
 import 'package:scn/models/device.dart';
 import 'package:scn/models/file_info.dart';
 import 'package:scn/models/session.dart';
@@ -24,6 +26,8 @@ class HttpServerService {
   
   ReceiveProvider? _receiveProvider;
   ChatProvider? _chatProvider;
+  RemoteDesktopHostService? _rdHostService;
+  RemoteFileHostService? _rdFileHostService;
   String _deviceAlias = 'SCN Device';
   String _deviceVersion = '1.0.0';
   String _deviceFingerprint = '';  // Постоянный fingerprint
@@ -36,9 +40,17 @@ class HttpServerService {
   void setProviders({
     ReceiveProvider? receiveProvider,
     ChatProvider? chatProvider,
+    RemoteDesktopHostService? rdHostService,
+    RemoteFileHostService? rdFileHostService,
   }) {
     _receiveProvider = receiveProvider;
     _chatProvider = chatProvider;
+    if (rdHostService != null) {
+      _rdHostService = rdHostService;
+    }
+    if (rdFileHostService != null) {
+      _rdFileHostService = rdFileHostService;
+    }
   }
   
   void setDeviceInfo({String? alias, String? version, String? fingerprint, String? deviceId}) {
@@ -93,6 +105,72 @@ class HttpServerService {
     // Chat file endpoint (direct file in chat)
     _router.post('/api/chat-file', (Request request) async {
       return await _handleChatFile(request);
+    });
+
+    // Remote Desktop endpoints
+    _router.post('/api/rd/request', (Request request) async {
+      final svc = _rdHostService;
+      if (svc == null) {
+        return Response.forbidden(jsonEncode({'error': 'rd disabled'}),
+            headers: {'Content-Type': 'application/json'});
+      }
+      return await svc.handleRequest(request);
+    });
+    _router.post('/api/rd/end', (Request request) async {
+      final svc = _rdHostService;
+      if (svc == null) {
+        return Response.notFound('rd disabled');
+      }
+      return await svc.handleEnd(request);
+    });
+    _router.get('/api/rd/ws', (Request request) async {
+      final svc = _rdHostService;
+      if (svc == null) {
+        return Response.forbidden('rd disabled');
+      }
+      return await svc.webSocketSignalingHandler(request);
+    });
+
+    // Remote Desktop file manager endpoints
+    _router.post('/api/rd/fs/connect', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleConnect(request);
+    });
+    _router.get('/api/rd/fs/list', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleList(request);
+    });
+    _router.get('/api/rd/fs/download', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleDownload(request);
+    });
+    _router.post('/api/rd/fs/upload', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleUpload(request);
+    });
+    _router.post('/api/rd/fs/mkdir', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleMkdir(request);
+    });
+    _router.post('/api/rd/fs/delete', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleDelete(request);
+    });
+    _router.post('/api/rd/fs/rename', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleRename(request);
+    });
+    _router.post('/api/rd/fs/disconnect', (Request request) async {
+      final svc = _rdFileHostService;
+      if (svc == null) return Response.forbidden('fs disabled');
+      return await svc.handleDisconnect(request);
     });
   }
   

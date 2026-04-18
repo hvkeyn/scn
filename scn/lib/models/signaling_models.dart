@@ -26,8 +26,7 @@ class IceServerConfig {
     this.credential,
   });
 
-  bool get isTurn =>
-      urls.any((url) => url.startsWith('turn:') || url.startsWith('turns:'));
+  bool get isTurn => urls.any((url) => url.startsWith('turn:') || url.startsWith('turns:'));
 
   Map<String, dynamic> toJson() => {
         'urls': urls,

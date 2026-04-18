@@ -1,7 +1,9 @@
 import 'dart:convert';
+import 'dart:math';
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:scn/models/remote_peer.dart';
+import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/http_client_service.dart';
 import 'package:scn/models/device.dart';
 
@@ -332,6 +334,109 @@ class RemotePeerProvider extends ChangeNotifier {
     _settings = _settings.copyWith(turnServers: turnServers);
     notifyListeners();
     await _saveSettings();
+  }
+
+  // ========== Remote Desktop settings ==========
+
+  Future<void> updateRemoteDesktopSettings(RemoteDesktopSettings rd) async {
+    _settings = _settings.copyWith(remoteDesktop: rd);
+    notifyListeners();
+    await _saveSettings();
+  }
+
+  Future<void> setRemoteDesktopEnabled(bool enabled) async {
+    var rd = _settings.remoteDesktop.copyWith(enabled: enabled);
+    if (enabled && (rd.password == null || rd.password!.isEmpty)) {
+      rd = rd.copyWith(password: _generateRandomPassword(8));
+    }
+    await updateRemoteDesktopSettings(rd);
+  }
+
+  Future<void> setRemoteDesktopAccessMode(
+      RemoteDesktopAccessMode mode) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(accessMode: mode));
+  }
+
+  Future<void> setRemoteDesktopPassword(String? password) async {
+    if (password == null || password.isEmpty) {
+      await updateRemoteDesktopSettings(
+          _settings.remoteDesktop.copyWith(clearPassword: true));
+    } else {
+      await updateRemoteDesktopSettings(
+          _settings.remoteDesktop.copyWith(password: password));
+    }
+  }
+
+  Future<void> regenerateRemoteDesktopPassword() async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(password: _generateRandomPassword(8)));
+  }
+
+  Future<void> setRemoteDesktopShareAudio(bool value) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(shareAudio: value));
+  }
+
+  Future<void> setRemoteDesktopViewOnly(bool value) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(viewOnlyByDefault: value));
+  }
+
+  Future<void> setRemoteDesktopBitrate(int kbps) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(defaultVideoBitrateKbps: kbps));
+  }
+
+  Future<void> setRemoteDesktopFps(int fps) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(defaultFps: fps));
+  }
+
+  Future<void> setRemoteDesktopCodec(String codec) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(preferredVideoCodec: codec));
+  }
+
+  Future<void> setRemoteDesktopFileManagerEnabled(bool enabled) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(fileManagerEnabled: enabled));
+  }
+
+  Future<void> setRemoteDesktopFileManagerReadOnly(bool readOnly) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(fileManagerReadOnly: readOnly));
+  }
+
+  Future<void> setRemoteDesktopFileManagerAllowedRoots(
+      List<String> roots) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(fileManagerAllowedRoots: roots));
+  }
+
+  Future<void> trustPeerForRemoteDesktop(String peerId) async {
+    final list = List<String>.from(_settings.remoteDesktop.trustedPeerIds);
+    if (!list.contains(peerId)) {
+      list.add(peerId);
+      await updateRemoteDesktopSettings(
+          _settings.remoteDesktop.copyWith(trustedPeerIds: list));
+    }
+  }
+
+  Future<void> untrustPeerForRemoteDesktop(String peerId) async {
+    final list = List<String>.from(_settings.remoteDesktop.trustedPeerIds)
+      ..remove(peerId);
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(trustedPeerIds: list));
+  }
+
+  static String _generateRandomPassword(int length) {
+    const charset =
+        'ABCDEFGHJKLMNPQRSTUVWXYZ23456789abcdefghijkmnopqrstuvwxyz';
+    final random = Random.secure();
+    return List.generate(
+            length, (_) => charset[random.nextInt(charset.length)])
+        .join();
   }
 }
 

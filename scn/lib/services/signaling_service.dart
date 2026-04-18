@@ -30,21 +30,17 @@ class SignalingService {
     required String deviceId,
     required String deviceAlias,
   }) async {
-    final response = await http
-        .post(
-          config.sessionsUri(),
-          headers: {'Content-Type': 'application/json'},
-          body: jsonEncode({
-            'deviceId': deviceId,
-            'deviceAlias': deviceAlias,
-          }),
-        )
-        .timeout(const Duration(seconds: 10));
+    final response = await http.post(
+      config.sessionsUri(),
+      headers: {'Content-Type': 'application/json'},
+      body: jsonEncode({
+        'deviceId': deviceId,
+        'deviceAlias': deviceAlias,
+      }),
+    ).timeout(const Duration(seconds: 10));
 
     if (response.statusCode != 200) {
-      throw Exception(
-        'Signaling session creation failed: ${response.statusCode}',
-      );
+      throw Exception('Signaling session creation failed: ${response.statusCode}');
     }
 
     return SignalingSession.fromJson(
@@ -71,18 +67,16 @@ class SignalingService {
     ).timeout(const Duration(seconds: 10));
 
     _socket = socket;
-    socket.add(
-      SignalingEnvelope(
-        type: SignalingMessageType.hello,
-        payload: {
-          'sessionId': sessionId,
-          'peerId': peerId,
-          'alias': alias,
-          'role': role,
-          'token': token,
-        },
-      ).encode(),
-    );
+    socket.add(SignalingEnvelope(
+      type: SignalingMessageType.hello,
+      payload: {
+        'sessionId': sessionId,
+        'peerId': peerId,
+        'alias': alias,
+        'role': role,
+        'token': token,
+      },
+    ).encode());
     socket.listen(
       (raw) {
         try {
@@ -113,29 +107,33 @@ class SignalingService {
   }
 
   void sendOffer(Map<String, dynamic> offer) {
-    send(SignalingEnvelope(type: SignalingMessageType.offer, payload: offer));
+    send(SignalingEnvelope(
+      type: SignalingMessageType.offer,
+      payload: offer,
+    ));
   }
 
   void sendAnswer(Map<String, dynamic> answer) {
-    send(SignalingEnvelope(type: SignalingMessageType.answer, payload: answer));
+    send(SignalingEnvelope(
+      type: SignalingMessageType.answer,
+      payload: answer,
+    ));
   }
 
   void sendIceCandidate(Map<String, dynamic> candidate) {
-    send(
-      SignalingEnvelope(
-        type: SignalingMessageType.iceCandidate,
-        payload: candidate,
-      ),
-    );
+    send(SignalingEnvelope(
+      type: SignalingMessageType.iceCandidate,
+      payload: candidate,
+    ));
   }
 
   void sendBye({String? reason}) {
-    send(
-      SignalingEnvelope(
-        type: SignalingMessageType.bye,
-        payload: {if (reason != null) 'reason': reason},
-      ),
-    );
+    send(SignalingEnvelope(
+      type: SignalingMessageType.bye,
+      payload: {
+        if (reason != null) 'reason': reason,
+      },
+    ));
   }
 
   Future<void> disconnect() async {

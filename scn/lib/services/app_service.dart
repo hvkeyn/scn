@@ -2,6 +2,8 @@ import 'package:flutter/foundation.dart';
 import 'package:scn/services/http_server_service.dart';
 import 'package:scn/services/discovery_service.dart';
 import 'package:scn/services/mesh_network_service.dart';
+import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
+import 'package:scn/services/remote_desktop/remote_file_host_service.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/device_provider.dart';
@@ -9,6 +11,7 @@ import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/utils/device_name_generator.dart';
 import 'package:scn/utils/test_storage.dart';
 import 'package:scn/utils/test_config.dart';
+import 'package:scn/utils/logger.dart';
 import 'package:scn/models/device_visibility.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
@@ -18,6 +21,8 @@ class AppService extends ChangeNotifier {
   final HttpServerService _httpServer = HttpServerService();
   final DiscoveryService _discovery = DiscoveryService();
   final MeshNetworkService _meshNetwork = MeshNetworkService();
+  final RemoteDesktopHostService _rdHostService = RemoteDesktopHostService();
+  final RemoteFileHostService _rdFileHostService = RemoteFileHostService();
   
   bool _initialized = false;
   bool _running = false;
@@ -50,6 +55,8 @@ class AppService extends ChangeNotifier {
   String get deviceId => _deviceFingerprint; // deviceId is same as fingerprint
   DeviceVisibility get deviceVisibility => _deviceVisibility;
   MeshNetworkService? get meshService => _running ? _meshNetwork : null;
+  RemoteDesktopHostService get remoteDesktopHostService => _rdHostService;
+  RemoteFileHostService get remoteFileHostService => _rdFileHostService;
   
   void setProviders({
     ReceiveProvider? receiveProvider,
@@ -60,6 +67,8 @@ class AppService extends ChangeNotifier {
     _httpServer.setProviders(
       receiveProvider: receiveProvider,
       chatProvider: chatProvider,
+      rdHostService: _rdHostService,
+      rdFileHostService: _rdFileHostService,
     );
     _discovery.setProvider(deviceProvider ?? DeviceProvider());
     
@@ -72,8 +81,12 @@ class AppService extends ChangeNotifier {
       _meshNetwork.onStateChanged = notifyListeners;
       _peerSettingsListener = () {
         _meshNetwork.updateSettings(peerProvider.settings);
+        _rdHostService.applySettings(peerProvider.settings.remoteDesktop);
+        _rdFileHostService.applySettings(peerProvider.settings.remoteDesktop);
       };
       peerProvider.addListener(_peerSettingsListener!);
+      _rdHostService.applySettings(peerProvider.settings.remoteDesktop);
+      _rdFileHostService.applySettings(peerProvider.settings.remoteDesktop);
     }
     
     _updateDeviceInfo();
@@ -96,6 +109,10 @@ class AppService extends ChangeNotifier {
       deviceId: _deviceFingerprint,
       alias: _deviceAlias,
       fingerprint: _deviceFingerprint,
+    );
+    _rdHostService.setIdentity(
+      deviceId: _deviceFingerprint,
+      alias: _deviceAlias,
     );
   }
   
@@ -236,7 +253,7 @@ class AppService extends ChangeNotifier {
         }
         await _meshNetwork.start();
       } catch (e) {
-        debugPrint('Mesh network failed to start (non-fatal): $e');
+        AppLogger.log('Mesh network failed to start (non-fatal): $e');
       }
       
       notifyListeners();
@@ -253,6 +270,8 @@ class AppService extends ChangeNotifier {
     if (!_running) return;
     
     try {
+      await _rdHostService.shutdown();
+      await _rdFileHostService.shutdown();
       await _httpServer.stop();
       await _discovery.stop();
       await _meshNetwork.stop();
@@ -273,6 +292,8 @@ class AppService extends ChangeNotifier {
     if (_peerProvider != null && _peerSettingsListener != null) {
       _peerProvider!.removeListener(_peerSettingsListener!);
     }
+    _rdHostService.dispose();
+    _rdFileHostService.dispose();
     stop();
     super.dispose();
   }

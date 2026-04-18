@@ -104,8 +104,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
     try {
       bool success = false;
       if (invite != null) {
-        final resolvedInvite =
-            _resolveInvite(invite, peerProvider.settings.signalingServerUrl);
+        final resolvedInvite = _resolveInvite(invite, peerProvider.settings.signalingServerUrl);
         success = await mesh.connectWithInvite(
           resolvedInvite,
           password: manualPassword.isNotEmpty ? manualPassword : invite.password,
@@ -143,8 +142,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
   }
 
   InviteCode _resolveInvite(InviteCode invite, String fallbackSignalingServerUrl) {
-    if (!invite.usesSignalingSession &&
-        invite.transportKind != InviteTransportKind.signalingSession) {
+    if (!invite.usesSignalingSession && invite.transportKind != InviteTransportKind.signalingSession) {
       return invite;
     }
 
@@ -159,8 +157,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
       expiresAt: invite.expiresAt,
       natType: invite.natType,
       transportKind: invite.transportKind,
-      signalingServerUrl:
-          invite.signalingServerUrl ?? fallbackSignalingServerUrl,
+      signalingServerUrl: invite.signalingServerUrl ?? fallbackSignalingServerUrl,
       sessionId: invite.sessionId,
       inviteToken: invite.inviteToken,
     );
@@ -184,8 +181,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
         final transportPlan = mesh?.currentTransportPlan ??
             const InternetTransportPlan(
               controlTransport: PeerTransport.unknown,
-              fileTransportMode:
-                  InternetFileTransportMode.webRtcDataChannelPlanned,
+              fileTransportMode: InternetFileTransportMode.webRtcDataChannelPlanned,
               summary: 'Нет активного WAN-транспорта',
               details: 'Сначала создайте или примите invite.',
             );
@@ -235,21 +231,14 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
                   Row(
                     children: [
                       Icon(
-                        _diagnostics == null
-                            ? Icons.help_outline
-                            : _reachabilityIcon(_diagnostics!.reachability),
-                        color: _diagnostics == null
-                            ? Colors.grey
-                            : _reachabilityColor(_diagnostics!.reachability),
+                        _diagnostics == null ? Icons.help_outline : _reachabilityIcon(_diagnostics!.reachability),
+                        color: _diagnostics == null ? Colors.grey : _reachabilityColor(_diagnostics!.reachability),
                       ),
                       const SizedBox(width: 8),
                       const Expanded(
                         child: Text(
                           'Internet Readiness',
-                          style: TextStyle(
-                            fontSize: 18,
-                            fontWeight: FontWeight.w600,
-                          ),
+                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                         ),
                       ),
                       if (_isRefreshing)
@@ -271,14 +260,8 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
                     _buildInfoRow('Recommendation', _diagnostics!.recommendation),
                     if (_diagnostics!.natInfo != null) ...[
                       _buildInfoRow('Public IP', _diagnostics!.natInfo!.publicIp),
-                      _buildInfoRow(
-                        'Public Port',
-                        '${_diagnostics!.natInfo!.publicPort}',
-                      ),
-                      _buildInfoRow(
-                        'NAT Type',
-                        _natTypeLabel(_diagnostics!.natInfo!.natType),
-                      ),
+                      _buildInfoRow('Public Port', '${_diagnostics!.natInfo!.publicPort}'),
+                      _buildInfoRow('NAT Type', _natTypeLabel(_diagnostics!.natInfo!.natType)),
                     ],
                   ] else
                     const Text(
@@ -301,26 +284,11 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
                   ),
                   const SizedBox(height: 12),
                   _buildInfoRow('Signaling', settings.signalingServerUrl),
-                  _buildInfoRow(
-                    'Embedded Signaling',
-                    appService.signalingUrl ?? 'Not running',
-                  ),
-                  _buildInfoRow(
-                    'Advertised URL',
-                    appService.advertisedSignalingUrl ?? 'Unknown',
-                  ),
-                  _buildInfoRow(
-                    'Prefer Relay',
-                    settings.preferRelay ? 'Yes' : 'No',
-                  ),
-                  _buildInfoRow(
-                    'Legacy Direct',
-                    settings.enableLegacyDirect ? 'Enabled' : 'Disabled',
-                  ),
-                  _buildInfoRow(
-                    'Hosted Session',
-                    mesh?.hostedSession?.sessionId ?? 'Not created',
-                  ),
+                  _buildInfoRow('Embedded Signaling', appService.signalingUrl ?? 'Not running'),
+                  _buildInfoRow('Advertised URL', appService.advertisedSignalingUrl ?? 'Unknown'),
+                  _buildInfoRow('Prefer Relay', settings.preferRelay ? 'Yes' : 'No'),
+                  _buildInfoRow('Legacy Direct', settings.enableLegacyDirect ? 'Enabled' : 'Disabled'),
+                  _buildInfoRow('Hosted Session', mesh?.hostedSession?.sessionId ?? 'Not created'),
                 ],
               ),
             ),
@@ -340,19 +308,10 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
                   _buildInfoRow('Mode', transportPlan.summary),
                   _buildInfoRow('Details', transportPlan.details),
                   _buildInfoRow('Stage', appService.wanConnectionStage),
-                  _buildInfoRow(
-                    'Stage Details',
-                    appService.wanConnectionDetails,
-                  ),
-                  _buildInfoRow(
-                    'Signaling State',
-                    appService.wanSignalingState,
-                  ),
+                  _buildInfoRow('Stage Details', appService.wanConnectionDetails),
+                  _buildInfoRow('Signaling State', appService.wanSignalingState),
                   _buildInfoRow('ICE State', appService.wanIceState),
-                  _buildInfoRow(
-                    'DataChannel State',
-                    appService.wanDataChannelState,
-                  ),
+                  _buildInfoRow('DataChannel State', appService.wanDataChannelState),
                   if (appService.wanLastError != null)
                     _buildInfoRow('Last Error', appService.wanLastError!),
                 ],
@@ -494,10 +453,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
                         ? const SizedBox(
                             width: 18,
                             height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: Colors.white,
-                            ),
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
                           )
                         : const Icon(Icons.link),
                     label: Text(_isConnecting ? 'Connecting...' : 'Connect'),
@@ -519,18 +475,9 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
                   ),
                   const SizedBox(height: 12),
                   _buildInfoRow('Signaling', settings.signalingServerUrl),
-                  _buildInfoRow(
-                    'Embedded Signaling',
-                    appService.signalingUrl ?? 'Not running',
-                  ),
-                  _buildInfoRow(
-                    'Prefer Relay',
-                    settings.preferRelay ? 'Yes' : 'No',
-                  ),
-                  _buildInfoRow(
-                    'Legacy Direct Compatibility',
-                    settings.enableLegacyDirect ? 'Enabled' : 'Disabled',
-                  ),
+                  _buildInfoRow('Embedded Signaling', appService.signalingUrl ?? 'Not running'),
+                  _buildInfoRow('Prefer Relay', settings.preferRelay ? 'Yes' : 'No'),
+                  _buildInfoRow('Legacy Direct Compatibility', settings.enableLegacyDirect ? 'Enabled' : 'Disabled'),
                 ],
               ),
             ),
@@ -570,7 +517,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
                     'Connection Notes',
                     style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
                   ),
-                  SizedBox(height: 12),
+                  SizedBox(height: 8),
                   Text('• Invite token через signaling нужен для нормального обмена SDP/ICE.'),
                   Text('• Direct path может не подняться за CGNAT или symmetric NAT. Это ожидаемо.'),
                   Text('• TURN relay должен покрывать такие случаи без ручного проброса порта.'),
@@ -671,7 +618,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
   }
 
   void _showPeerDialog(RemotePeer peer) {
-    showDialog(
+    showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: Text(peer.alias),
@@ -680,23 +627,18 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _buildInfoRow('Address', '${peer.address}:${peer.port}'),
-            _buildInfoRow('Type', peer.type.name),
             _buildInfoRow('Status', peer.status.name),
             _buildInfoRow('Transport', peer.transport.name),
             _buildInfoRow('Path', peer.connectionPath.name),
-            _buildInfoRow('Relay', peer.relayRequired ? 'Yes' : 'No'),
+            _buildInfoRow('Relay Required', peer.relayRequired ? 'Yes' : 'No'),
             if (peer.sessionId != null) _buildInfoRow('Session', peer.sessionId!),
-            if (peer.signalingServerUrl != null)
-              _buildInfoRow('Signaling', peer.signalingServerUrl!),
-            if (peer.fingerprint != null)
-              _buildInfoRow('Fingerprint', peer.fingerprint!.substring(0, 12)),
-            if (peer.lastSeen != null)
-              _buildInfoRow('Last seen', _formatTime(peer.lastSeen!)),
+            if (peer.signalingServerUrl != null) _buildInfoRow('Signaling', peer.signalingServerUrl!),
+            if (peer.lastSeen != null) _buildInfoRow('Last Seen', _formatTime(peer.lastSeen!)),
           ],
         ),
         actions: [
           TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.of(context).pop(),
             child: const Text('Close'),
           ),
         ],
@@ -705,68 +647,39 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
   }
 
   void _showQrDialog() {
-    if (_inviteCode == null) {
-      _showSnack('Нет invite кода', isError: true);
+    final invite = _inviteCode;
+    if (invite == null) {
+      _showSnack('Invite пока не готов', isError: true);
       return;
     }
 
-    final qrData = _inviteCode!.toUrl();
-    showDialog(
+    final data = invite.toUrl();
+    showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Invite QR'),
-        content: SingleChildScrollView(
+        content: SizedBox(
+          width: 260,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Container(
-                width: 220,
-                height: 220,
-                padding: const EdgeInsets.all(8),
-                decoration: BoxDecoration(
-                  color: Colors.white,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: QrImageView(
-                  data: qrData,
-                  version: QrVersions.auto,
-                  size: 200,
-                  backgroundColor: Colors.white,
-                  errorCorrectionLevel: QrErrorCorrectLevel.L,
-                  eyeStyle: const QrEyeStyle(
-                    eyeShape: QrEyeShape.square,
-                    color: Colors.black,
-                  ),
-                  dataModuleStyle: const QrDataModuleStyle(
-                    dataModuleShape: QrDataModuleShape.square,
-                    color: Colors.black,
-                  ),
-                ),
+              QrImageView(
+                data: data,
+                version: QrVersions.auto,
+                backgroundColor: Colors.white,
+                size: 220,
               ),
               const SizedBox(height: 12),
               SelectableText(
-                qrData,
-                style: const TextStyle(fontSize: 10, fontFamily: 'monospace'),
-              ),
-              const SizedBox(height: 8),
-              const Text(
-                'Отсканируйте QR или используйте invite URL',
-                textAlign: TextAlign.center,
+                data,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 10),
               ),
             ],
           ),
         ),
         actions: [
           TextButton(
-            onPressed: () {
-              Clipboard.setData(ClipboardData(text: qrData));
-              Navigator.pop(context);
-              _showSnack('Invite URL скопирован');
-            },
-            child: const Text('Copy URL'),
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context),
+            onPressed: () => Navigator.of(context).pop(),
             child: const Text('Close'),
           ),
         ],
@@ -784,7 +697,7 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
             width: 120,
             child: Text(
               label,
-              style: const TextStyle(fontWeight: FontWeight.bold),
+              style: const TextStyle(fontWeight: FontWeight.w600),
             ),
           ),
           Expanded(
@@ -798,33 +711,16 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
     );
   }
 
-  String _natTypeLabel(NatType type) {
-    switch (type) {
-      case NatType.openInternet:
-        return 'Open Internet';
-      case NatType.fullCone:
-        return 'Full Cone';
-      case NatType.restrictedCone:
-        return 'Restricted Cone';
-      case NatType.portRestricted:
-        return 'Port Restricted';
-      case NatType.symmetric:
-        return 'Symmetric / CGNAT';
-      case NatType.unknown:
-        return 'Unknown';
-    }
-  }
-
   IconData _reachabilityIcon(NetworkReachability reachability) {
     switch (reachability) {
       case NetworkReachability.directPossible:
-        return Icons.check_circle_outline;
+        return Icons.check_circle;
       case NetworkReachability.relayRecommended:
         return Icons.swap_horiz;
       case NetworkReachability.relayRequired:
-        return Icons.hub_outlined;
+        return Icons.settings_ethernet;
       case NetworkReachability.unreachable:
-        return Icons.error_outline;
+        return Icons.error;
       case NetworkReachability.unknown:
         return Icons.help_outline;
     }
@@ -845,6 +741,23 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
     }
   }
 
+  String _natTypeLabel(NatType type) {
+    switch (type) {
+      case NatType.openInternet:
+        return 'Open Internet';
+      case NatType.fullCone:
+        return 'Full Cone';
+      case NatType.restrictedCone:
+        return 'Restricted Cone';
+      case NatType.portRestricted:
+        return 'Port Restricted';
+      case NatType.symmetric:
+        return 'Symmetric';
+      case NatType.unknown:
+        return 'Unknown';
+    }
+  }
+
   Color _statusColor(PeerStatus status) {
     switch (status) {
       case PeerStatus.connected:
@@ -859,12 +772,11 @@ class _VpnPageState extends State<VpnPage> with SingleTickerProviderStateMixin {
   }
 
   String _formatTime(DateTime time) {
-    final now = DateTime.now();
-    final diff = now.difference(time);
-
+    final diff = DateTime.now().difference(time);
     if (diff.inSeconds < 60) return 'just now';
     if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
     if (diff.inHours < 24) return '${diff.inHours}h ago';
     return '${diff.inDays}d ago';
   }
 }
+

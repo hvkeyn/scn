@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/device_provider.dart';
 import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/services/app_service.dart';
 import 'package:scn/services/http_client_service.dart';
+import 'package:scn/services/peer_discovery_service.dart';
 import 'package:scn/models/session.dart';
 import 'package:scn/models/file_info.dart';
 import 'package:scn/models/device_visibility.dart';
@@ -14,6 +16,7 @@ import 'package:scn/widgets/scn_logo.dart';
 import 'package:scn/widgets/add_peer_dialog.dart';
 import 'package:scn/widgets/invitation_card.dart';
 import 'package:scn/widgets/peer_tile.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 class ReceiveTab extends StatefulWidget {
   const ReceiveTab({super.key});
@@ -24,6 +27,15 @@ class ReceiveTab extends StatefulWidget {
 
 class _ReceiveTabState extends State<ReceiveTab> {
   final Set<String> _selectedFiles = {};
+  InviteCode? _p2pInvite;
+  bool _inviteLoading = false;
+  String? _inviteError;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshInvite());
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -71,6 +83,14 @@ class _ReceiveTabState extends State<ReceiveTab> {
                     _buildVisibilitySection(context, appService),
                   ],
                 ),
+              ),
+            ),
+            
+            // P2P Invite Code (Internet)
+            SliverToBoxAdapter(
+              child: Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                child: _buildP2PInviteCard(context),
               ),
             ),
             
@@ -346,6 +366,207 @@ class _ReceiveTabState extends State<ReceiveTab> {
           ],
         ),
       ],
+    );
+  }
+  
+  Future<void> _refreshInvite() async {
+    if (!mounted) return;
+    setState(() {
+      _inviteLoading = true;
+      _inviteError = null;
+    });
+    
+    try {
+      final appService = context.read<AppService>();
+      final peerProvider = context.read<RemotePeerProvider>();
+      final meshPort = appService.meshService?.port ?? 53318;
+      final password = peerProvider.settings.acceptWithoutPassword
+          ? null
+          : peerProvider.settings.connectionPassword;
+      
+      final discovery = PeerDiscoveryService(
+        deviceId: appService.deviceId,
+        deviceAlias: appService.deviceAlias,
+      );
+      final invite = await discovery.generateInviteCode(
+        localPort: meshPort,
+        password: password,
+      );
+      
+      if (!mounted) return;
+      setState(() {
+        _p2pInvite = invite;
+        _inviteLoading = false;
+        _inviteError = null;
+      });
+    } catch (e) {
+      if (!mounted) return;
+      setState(() {
+        _inviteLoading = false;
+        _inviteError = e.toString();
+      });
+    }
+  }
+  
+  Widget _buildP2PInviteCard(BuildContext context) {
+    final theme = Theme.of(context);
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Icon(Icons.vpn_key, color: Colors.blue, size: 18),
+              const SizedBox(width: 8),
+              const Text(
+                'P2P Invite Code (Internet)',
+                style: TextStyle(color: Colors.white70, fontSize: 14, fontWeight: FontWeight.w600),
+              ),
+              const Spacer(),
+              IconButton(
+                tooltip: 'Refresh',
+                icon: const Icon(Icons.refresh, color: Colors.white54, size: 18),
+                onPressed: _inviteLoading ? null : _refreshInvite,
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+          if (_inviteLoading)
+            const Center(
+              child: SizedBox(
+                width: 20,
+                height: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+            )
+          else if (_p2pInvite != null) ...[
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                _p2pInvite!.toShortCode(),
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.copy),
+                    label: const Text('Copy Code'),
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: _p2pInvite!.toShortCode()));
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('Code copied!')),
+                        );
+                      }
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: OutlinedButton.icon(
+                    icon: const Icon(Icons.link),
+                    label: const Text('Copy URL'),
+                    onPressed: () async {
+                      await Clipboard.setData(ClipboardData(text: _p2pInvite!.toUrl()));
+                      if (mounted) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(content: Text('URL copied!')),
+                        );
+                      }
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            FilledButton.icon(
+              icon: const Icon(Icons.qr_code),
+              label: const Text('Show QR Code'),
+              onPressed: () => _showInviteQr(_p2pInvite!),
+            ),
+          ] else ...[
+            Text(
+              _inviteError ?? 'Invite code not available yet',
+              style: TextStyle(color: Colors.orange.shade300, fontSize: 12),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+  
+  void _showInviteQr(InviteCode invite) {
+    final qrData = invite.toUrl();
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        backgroundColor: const Color(0xFF1a1a2e),
+        title: const Text('Your QR Code', style: TextStyle(color: Colors.white)),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 220,
+                height: 220,
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: QrImageView(
+                  data: qrData,
+                  version: QrVersions.auto,
+                  size: 200,
+                  backgroundColor: Colors.white,
+                  errorCorrectionLevel: QrErrorCorrectLevel.L,
+                ),
+              ),
+              const SizedBox(height: 12),
+              SelectableText(
+                qrData,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 10,
+                  fontFamily: 'monospace',
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () async {
+              await Clipboard.setData(ClipboardData(text: qrData));
+              if (context.mounted) {
+                Navigator.pop(context);
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(content: Text('URL copied!')),
+                );
+              }
+            },
+            child: const Text('Copy URL'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
     );
   }
 

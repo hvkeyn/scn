@@ -91,8 +91,7 @@ class EmbeddedSignalingServerService {
       );
     });
 
-    _router.get('/api/v1/sessions/<sessionId>',
-        (Request request, String sessionId) {
+    _router.get('/api/v1/sessions/<sessionId>', (Request request, String sessionId) {
       final session = _sessions.get(sessionId);
       if (session == null) {
         return Response.notFound(
@@ -131,10 +130,7 @@ class EmbeddedSignalingServerService {
               final role = payload['role'] as String?;
               final token = payload['token'] as String?;
 
-              if (sessionId == null ||
-                  peerId == null ||
-                  role == null ||
-                  token == null) {
+              if (sessionId == null || peerId == null || role == null || token == null) {
                 channel.sink.add(jsonEncode({
                   'type': 'error',
                   'payload': {'reason': 'missing_hello_fields'},
@@ -166,11 +162,7 @@ class EmbeddedSignalingServerService {
               session!.attach(
                 role: role,
                 channel: channel,
-                peer: _EmbeddedSignalPeer(
-                  peerId: peerId,
-                  alias: alias,
-                  role: role,
-                ),
+                peer: _EmbeddedSignalPeer(peerId: peerId, alias: alias, role: role),
               );
 
               channel.sink.add(jsonEncode({
@@ -199,11 +191,7 @@ class EmbeddedSignalingServerService {
               return;
             }
 
-            currentSession.forward(
-              role: currentRole,
-              type: type,
-              payload: payload,
-            );
+            currentSession.forward(role: currentRole, type: type, payload: payload);
           },
           onDone: () {
             if (session != null && activeRole != null) {
