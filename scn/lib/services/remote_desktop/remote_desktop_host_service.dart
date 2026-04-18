@@ -322,6 +322,10 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
   Future<void> _startHostMedia(_HostSession session) async {
     try {
+      AppLogger.log(
+          'RD host: starting media for session ${session.sessionId} '
+          '(audio=${session.grantsAudio}, fps=${_settings.defaultFps})');
+
       final iceServers = <Map<String, dynamic>>[
         {
           'urls': [
@@ -336,14 +340,47 @@ class RemoteDesktopHostService extends ChangeNotifier {
       });
       session.pc = pc;
 
-      final stream = await navigator.mediaDevices.getDisplayMedia({
-        'video': {
-          if (_settings.defaultFps > 0) 'frameRate': _settings.defaultFps,
-        },
-        'audio': session.grantsAudio,
-      });
+      final dynamic videoConstraints = _settings.defaultFps > 0
+          ? <String, dynamic>{
+              'mandatory': <String, dynamic>{
+                'minFrameRate': _settings.defaultFps,
+                'maxFrameRate': _settings.defaultFps,
+              },
+              'optional': const <Map<String, dynamic>>[],
+            }
+          : true;
+      MediaStream stream;
+      try {
+        stream = await navigator.mediaDevices.getDisplayMedia({
+          'video': videoConstraints,
+          'audio': session.grantsAudio,
+        });
+      } catch (e, st) {
+        AppLogger.log('RD host: getDisplayMedia failed: $e\n$st');
+        await _failSession(session,
+            'Не удалось захватить экран хоста: $e\n'
+            'Если на хосте появилось окно выбора экрана/окна — нужно было '
+            'выбрать источник, а не закрывать диалог.');
+        return;
+      }
+
+      final videoTracks = stream.getVideoTracks();
+      if (videoTracks.isEmpty) {
+        AppLogger.log('RD host: getDisplayMedia returned no video tracks');
+        await _failSession(session,
+            'Захват экрана не вернул видео-треков. '
+            'Проверь, что выбран источник в системном окне выбора экрана.');
+        try {
+          await stream.dispose();
+        } catch (_) {}
+        return;
+      }
       session.screenStream = stream;
-      for (final track in stream.getVideoTracks()) {
+      AppLogger.log(
+          'RD host: captured ${videoTracks.length} video track(s), '
+          '${stream.getAudioTracks().length} audio track(s)');
+
+      for (final track in videoTracks) {
         await pc.addTrack(track, stream);
       }
       for (final track in stream.getAudioTracks()) {
@@ -362,12 +399,17 @@ class RemoteDesktopHostService extends ChangeNotifier {
       };
 
       pc.onConnectionState = (state) {
+        AppLogger.log(
+            'RD host: peer connection state for ${session.sessionId} = $state');
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
           session.status = RemoteDesktopSessionStatus.streaming;
           notifyListeners();
         } else if (state ==
-                RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-            state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+            RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+          _failSession(session,
+              'WebRTC peer connection failed (ICE/firewall problem).');
+        } else if (state ==
+            RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
           _terminate(session, RemoteDesktopSessionStatus.closed);
         }
       };
@@ -402,7 +444,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
         }
       }
 
-      // Сообщаем viewer'у, что готовы.
+      AppLogger.log('RD host: sending hostReady to ${session.sessionId}');
       session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
         type: RemoteDesktopSignalType.hostReady,
         payload: {
@@ -415,9 +457,23 @@ class RemoteDesktopHostService extends ChangeNotifier {
       _startStatsTimer(session);
     } catch (e, st) {
       AppLogger.log('Failed to start RD host media: $e\n$st');
-      await _terminate(session, RemoteDesktopSessionStatus.failed,
-          error: e.toString());
+      await _failSession(session,
+          'Внутренняя ошибка при запуске стриминга экрана: $e');
     }
+  }
+
+  /// Аварийное завершение сессии: отправляет error-сигнал клиенту с
+  /// человекочитаемым сообщением, и только потом закрывает peer/ws.
+  Future<void> _failSession(_HostSession session, String message) async {
+    AppLogger.log('RD host: failing session ${session.sessionId}: $message');
+    try {
+      session.ws?.sink.add(jsonEncode({
+        'type': RemoteDesktopSignalType.error.name,
+        'payload': {'message': message},
+      }));
+    } catch (_) {}
+    await _terminate(session, RemoteDesktopSessionStatus.failed,
+        error: message);
   }
 
   Future<void> _handleHostSignal(

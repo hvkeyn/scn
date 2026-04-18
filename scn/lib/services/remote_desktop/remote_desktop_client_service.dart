@@ -52,6 +52,8 @@ class RemoteDesktopClientService extends ChangeNotifier {
   String? _sessionToken;
   bool _disposed = false;
   Timer? _statsTimer;
+  bool _gotVideoTrack = false;
+  bool _peerEverConnected = false;
 
   RTCVideoRenderer get videoRenderer => _videoRenderer;
   bool get isVideoReady => _videoRendererReady;
@@ -169,9 +171,22 @@ class RemoteDesktopClientService extends ChangeNotifier {
           AppLogger.log('RD client WS error: $e');
         }
       },
-      onDone: () => _shutdown(RemoteDesktopSessionStatus.closed),
-      onError: (e) => _shutdown(RemoteDesktopSessionStatus.failed,
-          error: e.toString()),
+      onDone: () {
+        AppLogger.log('RD client: WS closed by host '
+            '(gotVideo=$_gotVideoTrack, everConnected=$_peerEverConnected)');
+        if (!_gotVideoTrack && !_peerEverConnected) {
+          _emitError(
+              'Хост закрыл соединение до того, как пошёл видеопоток. '
+              'Проверь на хост-машине: появилось ли окно выбора экрана? '
+              'Был ли источник выбран? Не выскакивало ли уведомление об ошибке?');
+        }
+        _shutdown(RemoteDesktopSessionStatus.closed);
+      },
+      onError: (e) {
+        AppLogger.log('RD client: WS error: $e');
+        _emitError('WebSocket error: $e');
+        _shutdown(RemoteDesktopSessionStatus.failed, error: e.toString());
+      },
       cancelOnError: false,
     );
   }
@@ -199,6 +214,14 @@ class RemoteDesktopClientService extends ChangeNotifier {
         ));
         break;
       case RemoteDesktopSignalType.bye:
+        AppLogger.log('RD client: received bye from host '
+            '(gotVideo=$_gotVideoTrack)');
+        if (!_gotVideoTrack && !_peerEverConnected) {
+          _emitError(
+              'Хост завершил сессию до старта видеопотока. '
+              'Скорее всего на хосте либо отменили выбор экрана, '
+              'либо захват экрана не удался.');
+        }
         await _shutdown(RemoteDesktopSessionStatus.closed);
         break;
       case RemoteDesktopSignalType.stats:
@@ -238,9 +261,14 @@ class RemoteDesktopClientService extends ChangeNotifier {
     _pc = pc;
 
     pc.onTrack = (RTCTrackEvent event) {
+      AppLogger.log(
+          'RD client: onTrack kind=${event.track.kind} streams=${event.streams.length}');
       if (event.streams.isNotEmpty) {
         _remoteStream = event.streams.first;
         _videoRenderer.srcObject = _remoteStream;
+        if (event.track.kind == 'video') {
+          _gotVideoTrack = true;
+        }
         notifyListeners();
       }
     };
@@ -257,7 +285,9 @@ class RemoteDesktopClientService extends ChangeNotifier {
     };
 
     pc.onConnectionState = (state) {
+      AppLogger.log('RD client: peer connection state = $state');
       if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+        _peerEverConnected = true;
         _session = _session?.copyWith(
           status: RemoteDesktopSessionStatus.streaming,
           startedAt: DateTime.now(),
@@ -265,8 +295,16 @@ class RemoteDesktopClientService extends ChangeNotifier {
         notifyListeners();
         _startStatsTimer();
       } else if (state ==
-              RTCPeerConnectionState.RTCPeerConnectionStateFailed ||
-          state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+          RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+        if (!_peerEverConnected) {
+          _emitError(
+              'Не удалось установить WebRTC-соединение (ICE failed). '
+              'Возможно, фаервол / разные подсети.');
+        }
+        _shutdown(RemoteDesktopSessionStatus.failed,
+            error: 'WebRTC connection failed');
+      } else if (state ==
+          RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
         _shutdown(RemoteDesktopSessionStatus.closed);
       }
     };
