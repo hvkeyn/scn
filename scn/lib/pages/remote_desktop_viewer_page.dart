@@ -7,6 +7,7 @@ import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_client_service.dart';
+import 'package:scn/utils/logger.dart';
 
 /// Полноэкранная страница для просмотра удалённого экрана.
 class RemoteDesktopViewerPage extends StatefulWidget {
@@ -30,6 +31,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   bool _controlActive = false; // переключатель view-only/control
   bool _captureKeyboard = true;
   Offset? _lastSentMove;
+  int _lastMoveSentAtMs = 0;
 
   /// Битмаска кнопок мыши, которые сейчас удержаны (kPrimaryMouseButton и т.п.).
   /// Нужно для корректного mouseUp: PointerUpEvent.buttons всегда 0,
@@ -77,10 +79,14 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   Future<void> _gracefulShutdown() async {
     if (_disconnecting) return;
     _disconnecting = true;
+    AppLogger.log('RD viewer: gracefulShutdown begin');
     _releaseAllInput();
     try {
       await _client.disconnect();
-    } catch (_) {}
+    } catch (e) {
+      AppLogger.log('RD viewer: disconnect threw: $e');
+    }
+    AppLogger.log('RD viewer: gracefulShutdown end');
   }
 
   @override
@@ -136,14 +142,22 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     if (!_controlActive) return;
     final n = _normalize(local);
     if (n == null) return;
+    // Жёсткий throttle по времени: не чаще 60 событий/сек. Без этого онHover
+    // / onPointerMove на быстрой мыши бомбят DataChannel сотнями событий в
+    // секунду, channel.send() начинает блокировать UI thread, и Flutter
+    // успевает пропустить onPointerUp — Windows не отпускает mouse capture
+    // окна, и курсор "залипает" внутри viewer'а. Симптом: всё видно, но
+    // мышь перестала реагировать на машине viewer.
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (nowMs - _lastMoveSentAtMs < 16) return;
     if (_lastSentMove != null) {
-      // Throttling — игнорируем move с дельтой <0.001 от последнего.
       if ((n.dx - _lastSentMove!.dx).abs() < 0.001 &&
           (n.dy - _lastSentMove!.dy).abs() < 0.001) {
         return;
       }
     }
     _lastSentMove = n;
+    _lastMoveSentAtMs = nowMs;
     _client.sendInputEvent(RemoteInputEvent(
       kind: RemoteInputEventKind.mouseMove,
       x: n.dx,
@@ -153,6 +167,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   }
 
   void _sendButton(PointerDownEvent ev) {
+    AppLogger.log(
+        'RD viewer: PointerDown buttons=${ev.buttons} held=$_pressedMouseButtons '
+        'controlActive=$_controlActive');
     if (!_controlActive) return;
     // Отправляем mouseDown ТОЛЬКО для тех кнопок, которые именно сейчас стали
     // нажатыми (новые в маске). Потом запоминаем актуальную маску.
@@ -181,6 +198,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   }
 
   void _sendButtonUp(PointerUpEvent ev) {
+    AppLogger.log(
+        'RD viewer: PointerUp buttons=${ev.buttons} held=$_pressedMouseButtons '
+        'controlActive=$_controlActive');
     if (!_controlActive) return;
     // PointerUpEvent.buttons после Up почти всегда 0; считаем "разницу" —
     // именно те битовые позиции, которые ушли из удерживаемых, и отжимаем их.
@@ -211,6 +231,8 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   /// PointerCancelEvent: фокус ушёл со страницы / pointer уехал за окно.
   /// Отжимаем всё, чтобы не было залипших кнопок на удалённой машине.
   void _sendButtonCancel(PointerCancelEvent ev) {
+    AppLogger.log(
+        'RD viewer: PointerCancel buttons=${ev.buttons} held=$_pressedMouseButtons');
     if (_pressedMouseButtons == 0) return;
     _releaseAllInput();
   }
@@ -467,14 +489,18 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     );
 
     if (_controlActive) {
+      // ВАЖНО: используем ОДИН Listener для всех pointer events.
+      // MouseRegion+Listener вместе создавали конкуренцию: onHover и
+      // onPointerHover оба могли стрелять для одного движения, удваивая
+      // нагрузку на DataChannel.
       videoView = MouseRegion(
         cursor: SystemMouseCursors.precise,
-        onHover: (e) => _sendMove(e.localPosition),
         child: Listener(
           behavior: HitTestBehavior.opaque,
           onPointerDown: _sendButton,
           onPointerUp: _sendButtonUp,
           onPointerCancel: _sendButtonCancel,
+          onPointerHover: (e) => _sendMove(e.localPosition),
           onPointerMove: (e) => _sendMove(e.localPosition),
           onPointerSignal: _sendScroll,
           child: videoView,
