@@ -61,6 +61,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             const SizedBox(height: 16),
             _connectCard(context),
             const SizedBox(height: 16),
+            _outgoingSessionCard(context),
+            const SizedBox(height: 16),
             _discoveredPeersCard(context),
             const SizedBox(height: 16),
             _activeSessionsCard(context, rdHost),
@@ -302,6 +304,87 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
           ),
         ],
       ),
+    );
+  }
+
+  /// Карточка активной исходящей сессии (мы как viewer): если клиент-сервис
+  /// не nullable, показываем её и даём кнопки Continue / Disconnect. Это
+  /// нужно чтобы юзер мог вернуться в сессию после нажатия back.
+  Widget _outgoingSessionCard(BuildContext context) {
+    return AnimatedBuilder(
+      animation: RemoteDesktopClientService.activeListenable,
+      builder: (context, _) {
+        final client = RemoteDesktopClientService.active;
+        final session = client?.session;
+        if (client == null || session == null) {
+          return const SizedBox.shrink();
+        }
+        // Подписываемся ещё и на сам клиент, чтобы реагировать на смену
+        // status (negotiating → streaming → closed).
+        return AnimatedBuilder(
+          animation: client,
+          builder: (context, _) {
+            final s = client.session;
+            if (s == null) return const SizedBox.shrink();
+            return Card(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: Row(
+                  children: [
+                    Icon(_iconForStatus(s.status),
+                        color: Theme.of(context).colorScheme.primary),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('Active outgoing session',
+                              style: Theme.of(context).textTheme.titleMedium),
+                          const SizedBox(height: 4),
+                          Text('${s.peerAddress} • ${s.status.name}',
+                              style: TextStyle(
+                                  color: Theme.of(context)
+                                      .colorScheme
+                                      .outline)),
+                        ],
+                      ),
+                    ),
+                    OutlinedButton.icon(
+                      icon: const Icon(Icons.open_in_full),
+                      label: const Text('Continue'),
+                      onPressed: () {
+                        // Возвращаемся на viewer-page. Page подхватит активный
+                        // клиент и не будет переподключаться.
+                        Navigator.of(context).push(MaterialPageRoute(
+                          builder: (_) => RemoteDesktopViewerPage(
+                            params: client.lastParams ??
+                                RemoteDesktopConnectParams(
+                                  host: s.peerAddress,
+                                  port: s.peerPort,
+                                  myDeviceId: '',
+                                  myAlias: '',
+                                ),
+                          ),
+                        ));
+                      },
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton.icon(
+                      icon: const Icon(Icons.close),
+                      label: const Text('Disconnect'),
+                      onPressed: () async {
+                        await client.disconnect();
+                        client.dispose();
+                      },
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 

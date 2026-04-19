@@ -10,6 +10,13 @@ import 'package:scn/services/remote_desktop/remote_desktop_client_service.dart';
 import 'package:scn/utils/logger.dart';
 
 /// Полноэкранная страница для просмотра удалённого экрана.
+///
+/// Логика lifecycle: если на момент открытия уже есть активный
+/// [RemoteDesktopClientService.active] — просто переиспользуем его (это
+/// возврат пользователя в существующую сессию через "Continue"). Если нет —
+/// создаём новый. При back-button КЛИЕНТА НЕ диспозим: сессия остаётся
+/// активной и доступной из главной страницы. Полное закрытие — только через
+/// явную кнопку "Disconnect".
 class RemoteDesktopViewerPage extends StatefulWidget {
   final RemoteDesktopConnectParams params;
 
@@ -21,7 +28,8 @@ class RemoteDesktopViewerPage extends StatefulWidget {
 }
 
 class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
-  final RemoteDesktopClientService _client = RemoteDesktopClientService();
+  late final RemoteDesktopClientService _client;
+  late final bool _ownsClient; // true если мы создали клиент сами; false если переиспользуем активный
   final FocusNode _focusNode = FocusNode();
   final GlobalKey _videoKey = GlobalKey();
   StreamSubscription? _errorSub;
@@ -42,17 +50,32 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   @override
   void initState() {
     super.initState();
+    final existing = RemoteDesktopClientService.active;
+    final canReuse = existing != null &&
+        existing.session != null &&
+        existing.session!.status != RemoteDesktopSessionStatus.closed &&
+        existing.session!.status != RemoteDesktopSessionStatus.failed;
+    if (canReuse) {
+      _client = existing;
+      _ownsClient = false;
+      _connecting = false;
+      _controlActive =
+          _client.session?.inputMode == RemoteDesktopInputMode.full;
+    } else {
+      _client = RemoteDesktopClientService();
+      _ownsClient = true;
+    }
     _client.addListener(_onClientChange);
     _errorSub = _client.errors.listen((msg) {
       if (!mounted) return;
       setState(() {
-        // Накапливаем сообщения, чтобы пользователь видел всю историю
-        // (например, сначала ICE failed, затем bye от хоста).
         _error = _error == null ? msg : '$_error\n\n$msg';
         _connecting = false;
       });
     });
-    _connect();
+    if (_ownsClient) {
+      _connect();
+    }
   }
 
   Future<void> _connect() async {
@@ -73,9 +96,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     setState(() {});
   }
 
-  /// Полное завершение сессии перед уходом со страницы. Отжимает все
-  /// удержанные клавиши/кнопки и async-ом закрывает WS, чтобы хост
-  /// получил bye и очистил сессию (иначе ловим "Host is already serving").
+  /// Полное завершение сессии — вызывается ТОЛЬКО по явному кнопке
+  /// "Disconnect". Отжимает удержанные клавиши/кнопки и закрывает WS.
+  /// После этого `RemoteDesktopClientService.active` становится null.
   Future<void> _gracefulShutdown() async {
     if (_disconnecting) return;
     _disconnecting = true;
@@ -89,15 +112,31 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     AppLogger.log('RD viewer: gracefulShutdown end');
   }
 
+  /// Уход со страницы без закрытия сессии (back-button). Сессия остаётся
+  /// в `RemoteDesktopClientService.active`, на главной странице появится
+  /// блок "Active outgoing session" с кнопкой Continue.
+  void _detachFromClient() {
+    _errorSub?.cancel();
+    _errorSub = null;
+    _client.removeListener(_onClientChange);
+    // Отжимаем то, что было нажато на момент back, чтобы курсор/клавиша не
+    // залипли на хосте.
+    _releaseAllInput();
+  }
+
   @override
   void dispose() {
+    AppLogger.log(
+        'RD viewer: dispose, ownsClient=$_ownsClient disconnecting=$_disconnecting');
     _errorSub?.cancel();
     _focusNode.dispose();
     _client.removeListener(_onClientChange);
-    // Если пользователь успел нажать back и не дождался graceful shutdown,
-    // всё равно отправляем bye, отжимаем кнопки и чистим клиент.
     _releaseAllInput();
-    _client.dispose();
+    if (_disconnecting) {
+      _client.dispose();
+    }
+    // Иначе — клиент остаётся живым в `RemoteDesktopClientService.active`,
+    // его освободит либо явный disconnect, либо повторный заход на страницу.
     super.dispose();
   }
 
@@ -322,15 +361,14 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   Widget build(BuildContext context) {
     final session = _client.session;
     return PopScope(
-      // Перехватываем системный back / AppBar leading: сначала корректно
-      // отключаемся (отжимаем кнопки + bye на хост + закрываем WS), и только
-      // потом закрываем страницу. Без этого на хосте оставалась зависшая
-      // negotiating-сессия и при повторном Connect ловили "Host is already
-      // serving another session".
+      // На back просто отсоединяемся от клиент-сервиса (НЕ закрываем сессию).
+      // Сессия остаётся живой в RemoteDesktopClientService.active, и юзер
+      // может вернуться через "Continue" с главной страницы Remote Desktop.
+      // Полное закрытие — только через явный кнопку Disconnect в toolbar.
       canPop: false,
-      onPopInvokedWithResult: (didPop, _) async {
+      onPopInvokedWithResult: (didPop, _) {
         if (didPop) return;
-        await _gracefulShutdown();
+        _detachFromClient();
         if (mounted) Navigator.of(context).pop();
       },
       child: Scaffold(

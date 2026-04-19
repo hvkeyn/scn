@@ -39,7 +39,27 @@ class RemoteDesktopConnectParams {
 
 /// Клиентская сторона удалённого desktop'а.
 /// Создаётся для каждой попытки подключения, после `dispose` нельзя переиспользовать.
+///
+/// Глобальный синглтон [active] переживает уход с RemoteDesktopViewerPage:
+/// если пользователь нажал back, страница диспозится, но клиент остаётся
+/// живым и доступен через [RemoteDesktopClientService.active]. Это позволяет
+/// показать на главной странице "Active outgoing session" с возможностью
+/// вернуться обратно (без переподключения и пересогласования WebRTC).
 class RemoteDesktopClientService extends ChangeNotifier {
+  /// Активный клиент (не более одного одновременно). Очищается на disconnect()/dispose().
+  static RemoteDesktopClientService? _active;
+  static final ValueNotifier<int> _activeRev = ValueNotifier<int>(0);
+  static RemoteDesktopClientService? get active => _active;
+
+  /// Подписка на изменение `active` (создан/уничтожен).
+  static Listenable get activeListenable => _activeRev;
+
+  static void _setActive(RemoteDesktopClientService? value) {
+    if (identical(_active, value)) return;
+    _active = value;
+    _activeRev.value = _activeRev.value + 1;
+  }
+
   RTCPeerConnection? _pc;
   RTCDataChannel? _inputChannel;
   WebSocketChannel? _ws;
@@ -59,6 +79,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
   RTCVideoRenderer get videoRenderer => _videoRenderer;
   bool get isVideoReady => _videoRendererReady;
   RemoteDesktopSession? get session => _session;
+  RemoteDesktopConnectParams? get lastParams => _lastParams;
   bool get isStreaming =>
       _session?.status == RemoteDesktopSessionStatus.streaming;
 
@@ -77,6 +98,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
   Future<bool> connect(RemoteDesktopConnectParams params) async {
     await _ensureRendererInitialized();
     _lastParams = params;
+    _setActive(this);
     try {
       final reqBody = RemoteDesktopRequest(
         viewerDeviceId: params.myDeviceId,
@@ -504,12 +526,18 @@ class RemoteDesktopClientService extends ChangeNotifier {
         errorMessage: error,
       );
     }
+    if (identical(_active, this)) {
+      _setActive(null);
+    }
     notifyListeners();
   }
 
   @override
   void dispose() {
     _disposed = true;
+    if (identical(_active, this)) {
+      _setActive(null);
+    }
     _shutdown(RemoteDesktopSessionStatus.closed);
     if (_videoRendererReady) {
       _videoRenderer.dispose();
