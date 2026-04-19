@@ -56,6 +56,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
 
   static void _setActive(RemoteDesktopClientService? value) {
     if (identical(_active, value)) return;
+    AppLogger.log('RD client: _setActive ${value == null ? "null" : "this"}');
     _active = value;
     _activeRev.value = _activeRev.value + 1;
   }
@@ -361,6 +362,11 @@ class RemoteDesktopClientService extends ChangeNotifier {
       RTCDataChannelInit()..ordered = true,
     );
     _inputChannel = channel;
+    channel.onDataChannelState = (state) {
+      AppLogger.log('RD client: input channel state=$state');
+    };
+    AppLogger.log(
+        'RD client: created input DataChannel state=${channel.state}');
 
     final offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
@@ -375,10 +381,27 @@ class RemoteDesktopClientService extends ChangeNotifier {
 
   /// Послать input event на хост (no-op если канал не открыт или нет прав).
   void sendInputEvent(RemoteInputEvent event) {
-    if (_session?.inputMode != RemoteDesktopInputMode.full) return;
+    if (_session?.inputMode != RemoteDesktopInputMode.full) {
+      if (event.kind != RemoteInputEventKind.mouseMove) {
+        AppLogger.log(
+            'RD client: sendInput rejected, inputMode=${_session?.inputMode}');
+      }
+      return;
+    }
     final channel = _inputChannel;
-    if (channel == null) return;
-    if (channel.state != RTCDataChannelState.RTCDataChannelOpen) return;
+    if (channel == null) {
+      if (event.kind != RemoteInputEventKind.mouseMove) {
+        AppLogger.log('RD client: sendInput rejected, channel=null');
+      }
+      return;
+    }
+    if (channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+      if (event.kind != RemoteInputEventKind.mouseMove) {
+        AppLogger.log(
+            'RD client: sendInput rejected, channel.state=${channel.state}');
+      }
+      return;
+    }
     // Защита: если буфер DataChannel начал пухнуть, дропаем move-события
     // (но НИКОГДА не дропаем mouseUp/keyUp/mouseDown — иначе залипания).
     final bufferedLow = channel.bufferedAmount ?? 0;
@@ -388,6 +411,11 @@ class RemoteDesktopClientService extends ChangeNotifier {
     }
     try {
       channel.send(RTCDataChannelMessage(event.toJsonString()));
+      if (event.kind != RemoteInputEventKind.mouseMove) {
+        AppLogger.log(
+            'RD client: sent ${event.kind.name} button=${event.button?.name} '
+            'key=${event.keyCode}');
+      }
     } catch (e) {
       AppLogger.log('RD client: sendInputEvent failed: $e');
     }
