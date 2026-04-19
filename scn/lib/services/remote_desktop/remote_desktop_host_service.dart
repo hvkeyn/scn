@@ -10,6 +10,7 @@ import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'package:scn/models/remote_desktop_models.dart';
+import 'package:scn/services/remote_desktop/host_window_manager.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/utils/logger.dart';
@@ -445,13 +446,18 @@ class RemoteDesktopHostService extends ChangeNotifier {
         AppLogger.log(
             'RD host: peer connection state for ${session.sessionId} = $state');
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          final wasStreaming =
+              session.status == RemoteDesktopSessionStatus.streaming;
           session.status = RemoteDesktopSessionStatus.streaming;
-          // ВАЖНО: НЕ минимизируем окно SCN автоматически (через
-          // HostWindowManager). Когда окно minimized, Flutter Windows
-          // переводит app lifecycle в paused/inactive и может перестать
-          // обрабатывать сообщения DataChannel — input events просто не
-          // доходят до InputInjector. Юзер должен сам свернуть окно
-          // (или поставить SCN в системный трей).
+          if (!wasStreaming) {
+            // Съёживаем главное окно SCN до 1×1 в углу. НЕ minimize —
+            // Flutter в minimized уходит в paused и DataChannel.onMessage
+            // перестаёт обрабатываться (входящие mouseUp залипают). 1×1
+            // даёт три выгоды: (1) Flutter остаётся resumed, (2) клики
+            // viewer'a не попадают в SCN UI (в 1 пиксель не попасть),
+            // (3) свернётся при завершении сессии обратно.
+            HostWindowManager.onSessionStarted();
+          }
           notifyListeners();
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
@@ -943,11 +949,16 @@ class RemoteDesktopHostService extends ChangeNotifier {
       RemoteDesktopSessionStatus status,
       {String? error}) async {
     if (!_sessions.containsKey(session.sessionId)) return;
+    final wasStreaming =
+        session.status == RemoteDesktopSessionStatus.streaming;
     session.status = status;
     session.errorMessage = error;
     session.statsTimer?.cancel();
     session.wsConnectWatchdog?.cancel();
     session.wsConnectWatchdog = null;
+    if (wasStreaming) {
+      HostWindowManager.onSessionEnded();
+    }
     _releaseAllHeldInput(session);
     try {
       session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
