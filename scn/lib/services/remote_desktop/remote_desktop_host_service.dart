@@ -10,6 +10,7 @@ import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'package:scn/models/remote_desktop_models.dart';
+import 'package:scn/services/remote_desktop/host_window_manager.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/utils/logger.dart';
@@ -445,7 +446,15 @@ class RemoteDesktopHostService extends ChangeNotifier {
         AppLogger.log(
             'RD host: peer connection state for ${session.sessionId} = $state');
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
+          final wasStreaming =
+              session.status == RemoteDesktopSessionStatus.streaming;
           session.status = RemoteDesktopSessionStatus.streaming;
+          if (!wasStreaming) {
+            // Сворачиваем окно SCN, чтобы клики viewer'a не попадали в наш UI
+            // (иначе пользователь, нажавший "Свернуть программу" на удалённом
+            // столе, на самом деле сворачивает SCN и теряет управление).
+            HostWindowManager.onSessionStarted();
+          }
           notifyListeners();
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
@@ -917,13 +926,16 @@ class RemoteDesktopHostService extends ChangeNotifier {
       RemoteDesktopSessionStatus status,
       {String? error}) async {
     if (!_sessions.containsKey(session.sessionId)) return;
+    final wasStreaming =
+        session.status == RemoteDesktopSessionStatus.streaming;
     session.status = status;
     session.errorMessage = error;
     session.statsTimer?.cancel();
     session.wsConnectWatchdog?.cancel();
     session.wsConnectWatchdog = null;
-    // Безопасность: viewer мог упасть, удерживая кнопку/клавишу. Без явного
-    // release они "залипнут" на хосте.
+    if (wasStreaming) {
+      HostWindowManager.onSessionEnded();
+    }
     _releaseAllHeldInput(session);
     try {
       session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
