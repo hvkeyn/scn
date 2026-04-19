@@ -10,7 +10,6 @@ import 'package:shelf_web_socket/shelf_web_socket.dart';
 import 'package:web_socket_channel/web_socket_channel.dart';
 
 import 'package:scn/models/remote_desktop_models.dart';
-import 'package:scn/services/remote_desktop/host_window_manager.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/utils/logger.dart';
@@ -446,15 +445,13 @@ class RemoteDesktopHostService extends ChangeNotifier {
         AppLogger.log(
             'RD host: peer connection state for ${session.sessionId} = $state');
         if (state == RTCPeerConnectionState.RTCPeerConnectionStateConnected) {
-          final wasStreaming =
-              session.status == RemoteDesktopSessionStatus.streaming;
           session.status = RemoteDesktopSessionStatus.streaming;
-          if (!wasStreaming) {
-            // Сворачиваем окно SCN, чтобы клики viewer'a не попадали в наш UI
-            // (иначе пользователь, нажавший "Свернуть программу" на удалённом
-            // столе, на самом деле сворачивает SCN и теряет управление).
-            HostWindowManager.onSessionStarted();
-          }
+          // ВАЖНО: НЕ минимизируем окно SCN автоматически (через
+          // HostWindowManager). Когда окно minimized, Flutter Windows
+          // переводит app lifecycle в paused/inactive и может перестать
+          // обрабатывать сообщения DataChannel — input events просто не
+          // доходят до InputInjector. Юзер должен сам свернуть окно
+          // (или поставить SCN в системный трей).
           notifyListeners();
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
@@ -477,8 +474,14 @@ class RemoteDesktopHostService extends ChangeNotifier {
       };
 
       pc.onDataChannel = (RTCDataChannel channel) {
+        AppLogger.log(
+            'RD host: onDataChannel label=${channel.label} state=${channel.state}');
         if (channel.label == 'scn-rd-input') {
           session.inputChannel = channel;
+          channel.onDataChannelState = (state) {
+            AppLogger.log(
+                'RD host: input channel state=$state for ${session.sessionId}');
+          };
           channel.onMessage = (msg) {
             if (!msg.isBinary) {
               _onInputEvent(session, msg.text);
@@ -678,15 +681,29 @@ class RemoteDesktopHostService extends ChangeNotifier {
   }
 
   void _onInputEvent(_HostSession session, String jsonText) {
-    if (!session.grantsControl) return;
-    if (!_inputInjector.isAvailable) return;
+    if (!session.grantsControl) {
+      AppLogger.log(
+          'RD host: input rejected (no grantsControl) for ${session.sessionId}');
+      return;
+    }
+    if (!_inputInjector.isAvailable) {
+      AppLogger.log(
+          'RD host: input rejected (injector not available) — Platform=${Platform.operatingSystem}');
+      return;
+    }
     try {
       final json = jsonDecode(jsonText) as Map<String, dynamic>;
       final event = RemoteInputEvent.fromJson(json);
+      // Логируем только не-move события, иначе лог превратится в спам.
+      if (event.kind != RemoteInputEventKind.mouseMove) {
+        AppLogger.log(
+            'RD host: inject ${event.kind.name} button=${event.button?.name} '
+            'key=${event.keyCode} x=${event.x} y=${event.y}');
+      }
       _trackHeldInput(session, event);
       _inputInjector.inject(event);
-    } catch (e) {
-      AppLogger.log('RD input parse error: $e');
+    } catch (e, st) {
+      AppLogger.log('RD input parse/inject error: $e\n$st');
     }
   }
 
@@ -926,16 +943,11 @@ class RemoteDesktopHostService extends ChangeNotifier {
       RemoteDesktopSessionStatus status,
       {String? error}) async {
     if (!_sessions.containsKey(session.sessionId)) return;
-    final wasStreaming =
-        session.status == RemoteDesktopSessionStatus.streaming;
     session.status = status;
     session.errorMessage = error;
     session.statsTimer?.cancel();
     session.wsConnectWatchdog?.cancel();
     session.wsConnectWatchdog = null;
-    if (wasStreaming) {
-      HostWindowManager.onSessionEnded();
-    }
     _releaseAllHeldInput(session);
     try {
       session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
