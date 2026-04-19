@@ -12,6 +12,7 @@ import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/services/app_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_client_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
+import 'package:scn/utils/logger.dart';
 
 class RemoteDesktopPage extends StatefulWidget {
   const RemoteDesktopPage({super.key});
@@ -315,47 +316,47 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
       animation: RemoteDesktopClientService.activeListenable,
       builder: (context, _) {
         final client = RemoteDesktopClientService.active;
-        final session = client?.session;
-        if (client == null || session == null) {
-          return const SizedBox.shrink();
-        }
-        // Подписываемся ещё и на сам клиент, чтобы реагировать на смену
-        // status (negotiating → streaming → closed).
+        AppLogger.log(
+            'RD page: _outgoingSessionCard outer build, client=${client != null}');
+        if (client == null) return const SizedBox.shrink();
         return AnimatedBuilder(
           animation: client,
           builder: (context, _) {
             final s = client.session;
+            AppLogger.log(
+                'RD page: _outgoingSessionCard inner build, session=${s != null}, status=${s?.status.name}');
             if (s == null) return const SizedBox.shrink();
+            final scheme = Theme.of(context).colorScheme;
             return Card(
-              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              color: scheme.primaryContainer,
+              elevation: 2,
               child: Padding(
                 padding: const EdgeInsets.all(16),
                 child: Row(
                   children: [
-                    Icon(_iconForStatus(s.status),
-                        color: Theme.of(context).colorScheme.primary),
+                    Icon(_iconForStatus(s.status), color: scheme.primary),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text('Active outgoing session',
-                              style: Theme.of(context).textTheme.titleMedium),
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .titleMedium
+                                  ?.copyWith(color: scheme.onPrimaryContainer)),
                           const SizedBox(height: 4),
                           Text('${s.peerAddress} • ${s.status.name}',
                               style: TextStyle(
-                                  color: Theme.of(context)
-                                      .colorScheme
-                                      .outline)),
+                                  color: scheme.onPrimaryContainer
+                                      .withOpacity(0.7))),
                         ],
                       ),
                     ),
-                    OutlinedButton.icon(
+                    FilledButton.icon(
                       icon: const Icon(Icons.open_in_full),
                       label: const Text('Continue'),
                       onPressed: () {
-                        // Возвращаемся на viewer-page. Page подхватит активный
-                        // клиент и не будет переподключаться.
                         Navigator.of(context).push(MaterialPageRoute(
                           builder: (_) => RemoteDesktopViewerPage(
                             params: client.lastParams ??
