@@ -50,6 +50,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
 
   RemoteDesktopSession? _session;
   String? _sessionToken;
+  RemoteDesktopConnectParams? _lastParams;
   bool _disposed = false;
   Timer? _statsTimer;
   bool _gotVideoTrack = false;
@@ -75,6 +76,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
   /// Запросить сессию у хоста через REST + WS.
   Future<bool> connect(RemoteDesktopConnectParams params) async {
     await _ensureRendererInitialized();
+    _lastParams = params;
     try {
       final reqBody = RemoteDesktopRequest(
         viewerDeviceId: params.myDeviceId,
@@ -355,7 +357,18 @@ class RemoteDesktopClientService extends ChangeNotifier {
     final channel = _inputChannel;
     if (channel == null) return;
     if (channel.state != RTCDataChannelState.RTCDataChannelOpen) return;
-    channel.send(RTCDataChannelMessage(event.toJsonString()));
+    // Защита: если буфер DataChannel начал пухнуть, дропаем move-события
+    // (но НИКОГДА не дропаем mouseUp/keyUp/mouseDown — иначе залипания).
+    final bufferedLow = channel.bufferedAmount ?? 0;
+    if (bufferedLow > 256 * 1024 &&
+        event.kind == RemoteInputEventKind.mouseMove) {
+      return;
+    }
+    try {
+      channel.send(RTCDataChannelMessage(event.toJsonString()));
+    } catch (e) {
+      AppLogger.log('RD client: sendInputEvent failed: $e');
+    }
   }
 
   /// Запросить смену качества (новый битрейт/FPS).
@@ -428,13 +441,30 @@ class RemoteDesktopClientService extends ChangeNotifier {
   }
 
   Future<void> disconnect() async {
-    if (_session != null && _sessionToken != null) {
+    AppLogger.log('RD client: disconnect() called');
+    final session = _session;
+    final token = _sessionToken;
+    final params = _lastParams;
+    if (session != null && token != null) {
       try {
         // Best-effort сообщение хосту, что мы уходим.
         _ws?.sink.add(jsonEncode(
             const RemoteDesktopSignal(type: RemoteDesktopSignalType.bye)
                 .toJson()));
       } catch (_) {}
+      // Подстраховка: REST end-endpoint. Даже если WS успел оборваться или
+      // bye не дошёл, хост гарантированно очистит сессию (иначе ловим
+      // "Host is already serving" при повторном Connect).
+      if (params != null) {
+        unawaited(http
+            .post(Uri.parse(
+                '${params.baseHttpUrl}/api/rd/end?sessionId=${session.sessionId}&token=$token'))
+            .timeout(const Duration(seconds: 3))
+            .then((_) {})
+            .catchError((e) {
+          AppLogger.log('RD client: REST /end failed (it is OK): $e');
+        }));
+      }
     }
     await _shutdown(RemoteDesktopSessionStatus.closed);
   }
