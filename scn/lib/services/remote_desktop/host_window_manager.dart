@@ -10,25 +10,38 @@ import 'package:scn/utils/logger.dart';
 ///
 /// Проблема: пока хост стримит экран, окно SCN на хосте находится поверх
 /// других окон. Когда viewer "кликает свернуть/закрыть" в координатах,
-/// которые на хосте попадают НА title-bar SCN, клик уходит в SCN — окно
-/// сворачивается, Flutter Windows lifecycle переходит в `paused`, и
-/// `RTCDataChannel.onMessage` перестаёт обрабатываться. В лог хоста это
-/// видно как "пропал" mouseUp на 20+ секунд (события скапливаются и
-/// выдаются пачкой когда юзер раз-сворачивает SCN).
+/// которые на хосте попадают НА title-bar SCN или его debug-консоль, клик
+/// уходит в SCN, активирует/сворачивает его, Flutter Windows lifecycle
+/// переходит в `paused`/`inactive`, и `RTCDataChannel.onMessage` перестаёт
+/// обрабатываться (события скапливаются и выдаются пачкой когда юзер
+/// раз-сворачивает SCN).
 ///
-/// Решение: на время сессии съёживаем окно SCN до 1×1 в углу экрана.
-///   - Не minimized → Flutter остаётся в `resumed`, DataChannel живой.
-///   - Не получает кликов мыши (попасть в 1 пиксель практически невозможно).
-///   - По завершении сессии — восстанавливаем оригинальный размер/позицию.
+/// Решение:
+///   1. На время сессии **переносим окно SCN за пределы экрана**
+///      (-32000,-32000) и сжимаем до 1×1. Окно не minimized → Flutter
+///      остаётся `resumed`. Гарантированно не получает кликов мыши, т.к.
+///      его HWND вообще нет в видимой части экрана.
+///   2. Скрываем debug-консоль Flutter (только debug-сборка): её title-bar
+///      виден на экране и по нему тоже легко кликнуть.
+///   3. По завершении ВСЕХ сессий — восстанавливаем оригинальный rect и
+///      возвращаем консоль.
 class HostWindowManager {
   static int _activeSessions = 0;
   static _SavedRect? _savedRect;
   static int _savedHwnd = 0;
+  static int _savedConsoleHwnd = 0;
+
+  // Координаты "виртуального небытия" в Windows: окно с такими x/y
+  // сохраняет свой HWND, не minimized, но не виден пользователю и не
+  // принимает hit-test'ов от мыши.
+  static const int _hiddenX = -32000;
+  static const int _hiddenY = -32000;
 
   static void onSessionStarted() {
     _activeSessions++;
     if (_activeSessions == 1) {
-      _shrinkMainWindow();
+      _hideMainWindow();
+      _hideConsoleWindow();
     }
   }
 
@@ -37,10 +50,11 @@ class HostWindowManager {
     _activeSessions--;
     if (_activeSessions == 0) {
       _restoreMainWindow();
+      _restoreConsoleWindow();
     }
   }
 
-  static void _shrinkMainWindow() {
+  static void _hideMainWindow() {
     if (!Platform.isWindows) return;
     try {
       final pid = GetCurrentProcessId();
@@ -65,12 +79,13 @@ class HostWindowManager {
       }
       const swpNoZorder = 0x0004;
       const swpNoActivate = 0x0010;
-      SetWindowPos(hwnd, 0, 0, 0, 1, 1, swpNoZorder | swpNoActivate);
+      SetWindowPos(
+          hwnd, 0, _hiddenX, _hiddenY, 1, 1, swpNoZorder | swpNoActivate);
       AppLogger.log(
-          'HostWindowManager: shrunk SCN window hwnd=$hwnd to 1x1 '
-          '(saved rect=$_savedRect)');
+          'HostWindowManager: moved SCN window hwnd=$hwnd off-screen '
+          '($_hiddenX,$_hiddenY 1x1), saved rect=$_savedRect');
     } catch (e, st) {
-      AppLogger.log('HostWindowManager: shrink failed: $e\n$st');
+      AppLogger.log('HostWindowManager: hide failed: $e\n$st');
     }
   }
 
@@ -91,6 +106,35 @@ class HostWindowManager {
     } finally {
       _savedRect = null;
       _savedHwnd = 0;
+    }
+  }
+
+  /// Скрывает консольное окно (debug-сборка Flutter Windows). В release
+  /// сборке GetConsoleWindow вернёт 0 — no-op.
+  static void _hideConsoleWindow() {
+    if (!Platform.isWindows) return;
+    try {
+      final hConsole = GetConsoleWindow();
+      if (hConsole == 0) return;
+      _savedConsoleHwnd = hConsole;
+      ShowWindow(hConsole, SW_HIDE);
+      AppLogger.log('HostWindowManager: hidden console hwnd=$hConsole');
+    } catch (e) {
+      AppLogger.log('HostWindowManager: hide console failed: $e');
+    }
+  }
+
+  static void _restoreConsoleWindow() {
+    if (!Platform.isWindows) return;
+    if (_savedConsoleHwnd == 0) return;
+    try {
+      ShowWindow(_savedConsoleHwnd, SW_SHOW);
+      AppLogger.log(
+          'HostWindowManager: restored console hwnd=$_savedConsoleHwnd');
+    } catch (e) {
+      AppLogger.log('HostWindowManager: restore console failed: $e');
+    } finally {
+      _savedConsoleHwnd = 0;
     }
   }
 
