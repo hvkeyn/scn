@@ -81,8 +81,7 @@ class HostWindowManager {
       const swpNoActivate = 0x0010;
       SetWindowPos(
           hwnd, 0, _hiddenX, _hiddenY, 1, 1, swpNoZorder | swpNoActivate);
-      AppLogger.log(
-          'HostWindowManager: moved SCN window hwnd=$hwnd off-screen '
+      AppLogger.log('HostWindowManager: moved SCN window hwnd=$hwnd off-screen '
           '($_hiddenX,$_hiddenY 1x1), saved rect=$_savedRect');
     } catch (e, st) {
       AppLogger.log('HostWindowManager: hide failed: $e\n$st');
@@ -140,10 +139,14 @@ class HostWindowManager {
 
   static int _findMainWindowOfProcess(int pid) {
     int found = 0;
+    final consoleHwnd = Platform.isWindows ? GetConsoleWindow() : 0;
     final pidPtr = calloc<Uint32>();
     try {
       final cb = NativeCallable<EnumWindowsProc>.isolateLocal(
         (int hwnd, int lParam) {
+          if (hwnd == consoleHwnd) {
+            return TRUE;
+          }
           GetWindowThreadProcessId(hwnd, pidPtr);
           if (pidPtr.value == pid && IsWindowVisible(hwnd) != 0) {
             if (GetWindow(hwnd, GW_OWNER) == 0) {

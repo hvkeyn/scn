@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -27,6 +29,13 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   final TextEditingController _passwordCtrl = TextEditingController();
   bool _wantControl = true;
   bool _wantAudio = false;
+  List<String> _localIps = const [];
+
+  @override
+  void initState() {
+    super.initState();
+    _refreshLocalIps();
+  }
 
   @override
   void dispose() {
@@ -36,10 +45,33 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     super.dispose();
   }
 
+  Future<void> _refreshLocalIps() async {
+    try {
+      final interfaces = await NetworkInterface.list(
+        includeLoopback: false,
+        type: InternetAddressType.IPv4,
+      );
+      final ips = <String>[];
+      for (final iface in interfaces) {
+        for (final addr in iface.addresses) {
+          if (!addr.isLoopback && addr.type == InternetAddressType.IPv4) {
+            ips.add(addr.address);
+          }
+        }
+      }
+      ips.sort();
+      if (!mounted) return;
+      setState(() => _localIps = ips);
+    } catch (e) {
+      AppLogger.log('RD page: failed to enumerate local IPs: $e');
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final rdHost = context.watch<RemoteDesktopHostService>();
     final settings = context.watch<RemotePeerProvider>().settings.remoteDesktop;
+    final app = context.watch<AppService>();
 
     return Scaffold(
       body: SingleChildScrollView(
@@ -58,17 +90,166 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
               ],
             ),
             const SizedBox(height: 16),
+            _myAccessCard(context, app, settings),
+            const SizedBox(height: 16),
             _hostStatusCard(context, settings),
             const SizedBox(height: 16),
-            _connectCard(context),
-            const SizedBox(height: 16),
             _outgoingSessionCard(context),
+            const SizedBox(height: 16),
+            _connectCard(context),
             const SizedBox(height: 16),
             _discoveredPeersCard(context),
             const SizedBox(height: 16),
             _activeSessionsCard(context, rdHost),
           ],
         ),
+      ),
+    );
+  }
+
+  Widget _myAccessCard(
+      BuildContext context, AppService app, RemoteDesktopSettings rd) {
+    final scheme = Theme.of(context).colorScheme;
+    final code = _connectionCodeForId(app.deviceId);
+    final firstAddress = _localIps.isNotEmpty ? _localIps.first : null;
+    final addressText =
+        firstAddress == null ? null : '$firstAddress:${app.port}';
+
+    return Card(
+      color: scheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.important_devices,
+                    color: scheme.onSecondaryContainer),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Ваш рабочий стол',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                          color: scheme.onSecondaryContainer,
+                        ),
+                  ),
+                ),
+                if (!rd.enabled)
+                  FilledButton.icon(
+                    icon: const Icon(Icons.power_settings_new),
+                    label: const Text('Включить'),
+                    onPressed: () => context
+                        .read<RemotePeerProvider>()
+                        .setRemoteDesktopEnabled(true),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              children: [
+                _copyBlock(
+                  context: context,
+                  label: 'ID для подключения',
+                  value: _formatConnectionCode(code),
+                  copyValue: code,
+                  icon: Icons.badge_outlined,
+                ),
+                if (addressText != null)
+                  _copyBlock(
+                    context: context,
+                    label: 'IP:порт',
+                    value: addressText,
+                    copyValue: addressText,
+                    icon: Icons.lan_outlined,
+                  ),
+                if (rd.password != null && rd.password!.isNotEmpty)
+                  _copyBlock(
+                    context: context,
+                    label: 'Пароль',
+                    value: rd.password!,
+                    copyValue: rd.password!,
+                    icon: Icons.password,
+                  ),
+              ],
+            ),
+            if (_localIps.length > 1) ...[
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _localIps
+                    .map((ip) => ActionChip(
+                          avatar: const Icon(Icons.copy, size: 16),
+                          label: Text('$ip:${app.port}'),
+                          onPressed: () => _copyText(
+                              context, '$ip:${app.port}', 'IP:порт скопирован'),
+                        ))
+                    .toList(),
+              ),
+            ],
+            const SizedBox(height: 10),
+            Text(
+              rd.enabled
+                  ? 'На другой машине можно ввести ID, выбрать устройство из LAN-списка или указать IP:порт вручную.'
+                  : 'Включите hosting, чтобы этот рабочий стол принимал подключения.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: scheme.onSecondaryContainer.withOpacity(0.75),
+                  ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _copyBlock({
+    required BuildContext context,
+    required String label,
+    required String value,
+    required String copyValue,
+    required IconData icon,
+  }) {
+    final scheme = Theme.of(context).colorScheme;
+    return Container(
+      constraints: const BoxConstraints(minWidth: 180),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: scheme.surface.withOpacity(0.72),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: scheme.outlineVariant),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 18),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(label, style: Theme.of(context).textTheme.labelSmall),
+                SelectableText(
+                  value,
+                  style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                        fontFamily: 'monospace',
+                        fontWeight: FontWeight.w600,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: 'Copy',
+            visualDensity: VisualDensity.compact,
+            icon: const Icon(Icons.copy, size: 18),
+            onPressed: () => _copyText(context, copyValue, '$label скопирован'),
+          ),
+        ],
       ),
     );
   }
@@ -89,13 +270,13 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                       : Theme.of(context).colorScheme.outline,
                 ),
                 const SizedBox(width: 12),
-                Text('Hosting',
-                    style: Theme.of(context).textTheme.titleMedium),
+                Text('Hosting', style: Theme.of(context).textTheme.titleMedium),
                 const Spacer(),
                 Switch.adaptive(
                   value: rd.enabled,
-                  onChanged: (v) =>
-                      context.read<RemotePeerProvider>().setRemoteDesktopEnabled(v),
+                  onChanged: (v) => context
+                      .read<RemotePeerProvider>()
+                      .setRemoteDesktopEnabled(v),
                 ),
               ],
             ),
@@ -135,8 +316,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
           SizedBox(
             width: 110,
             child: Text('Password:',
-                style:
-                    TextStyle(color: Theme.of(context).colorScheme.outline)),
+                style: TextStyle(color: Theme.of(context).colorScheme.outline)),
           ),
           Expanded(
             child: SelectableText(
@@ -184,7 +364,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                   child: TextField(
                     controller: _hostCtrl,
                     decoration: const InputDecoration(
-                      labelText: 'Host (IP or DNS)',
+                      labelText: 'ID, IP, host или IP:порт',
+                      helperText: 'Например: 256 884 790 или 192.168.1.9:53317',
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -267,8 +448,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             const SizedBox(height: 8),
             if (devices.isEmpty)
               Text('No devices discovered yet.',
-                  style: TextStyle(
-                      color: Theme.of(context).colorScheme.outline))
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.outline))
             else
               ...devices.map((d) => _peerListTile(context, d)),
           ],
@@ -278,13 +459,22 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   }
 
   Widget _peerListTile(BuildContext context, Device device) {
+    final code = _formatConnectionCode(_connectionCodeForId(device.id));
     return ListTile(
       leading: const Icon(Icons.computer),
       title: Text(device.alias),
-      subtitle: Text('${device.ip}:${device.port}'),
+      subtitle: Text('ID $code • ${device.ip}:${device.port}'),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          IconButton(
+            tooltip: 'Copy ID/IP',
+            icon: const Icon(Icons.copy),
+            onPressed: () => _copyText(
+                context,
+                '${_connectionCodeForId(device.id)}\n${device.ip}:${device.port}',
+                'ID/IP copied'),
+          ),
           IconButton(
             tooltip: 'Open file manager',
             icon: const Icon(Icons.folder_open),
@@ -403,8 +593,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             const SizedBox(height: 8),
             if (sessions.isEmpty)
               Text('No active sessions.',
-                  style: TextStyle(
-                      color: Theme.of(context).colorScheme.outline))
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.outline))
             else
               ...sessions.map((s) => ListTile(
                     leading: Icon(_iconForStatus(s.status)),
@@ -459,8 +649,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             SizedBox(
               width: 110,
               child: Text('$k:',
-                  style: TextStyle(
-                      color: Theme.of(context).colorScheme.outline)),
+                  style:
+                      TextStyle(color: Theme.of(context).colorScheme.outline)),
             ),
             Expanded(child: SelectableText(v)),
           ],
@@ -468,18 +658,17 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
       );
 
   void _onManualConnect() {
-    final host = _hostCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim());
-    if (host.isEmpty || port == null) {
+    final target = _resolveConnectTarget();
+    if (target == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Provide host and port')),
+        const SnackBar(content: Text('Введите ID, IP или host:port')),
       );
       return;
     }
     final app = context.read<AppService>();
     final params = RemoteDesktopConnectParams(
-      host: host,
-      port: port,
+      host: target.host,
+      port: target.port,
       myDeviceId: app.deviceId,
       myAlias: app.deviceAlias,
       password: _passwordCtrl.text.isEmpty ? null : _passwordCtrl.text,
@@ -492,18 +681,17 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   }
 
   void _onManualOpenFiles() {
-    final host = _hostCtrl.text.trim();
-    final port = int.tryParse(_portCtrl.text.trim());
-    if (host.isEmpty || port == null) {
+    final target = _resolveConnectTarget();
+    if (target == null) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Provide host and port')),
+        const SnackBar(content: Text('Введите ID, IP или host:port')),
       );
       return;
     }
     final app = context.read<AppService>();
     final params = RemoteFileSessionParams(
-      host: host,
-      port: port,
+      host: target.host,
+      port: target.port,
       viewerDeviceId: app.deviceId,
       viewerAlias: app.deviceAlias,
       password: _passwordCtrl.text.isEmpty ? null : _passwordCtrl.text,
@@ -511,8 +699,95 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => RemoteFileManagerPage(
         params: params,
-        title: 'Files: $host',
+        title: 'Files: ${target.host}',
       ),
     ));
   }
+
+  _ConnectTarget? _resolveConnectTarget() {
+    final input = _hostCtrl.text.trim();
+    final portFromField = int.tryParse(_portCtrl.text.trim());
+    if (input.isEmpty) return null;
+
+    final normalizedCode = _digitsOnly(input);
+    final devices = context.read<DeviceProvider>().devices;
+    if (normalizedCode.length >= 6) {
+      for (final device in devices) {
+        final deviceCode = _connectionCodeForId(device.id);
+        if (deviceCode == normalizedCode ||
+            deviceCode.endsWith(normalizedCode)) {
+          _hostCtrl.text = device.ip;
+          _portCtrl.text = device.port.toString();
+          return _ConnectTarget(device.ip, device.port);
+        }
+      }
+    }
+
+    final parsed = _parseHostPort(input, portFromField);
+    if (parsed != null) {
+      _hostCtrl.text = parsed.host;
+      _portCtrl.text = parsed.port.toString();
+      return parsed;
+    }
+
+    final lower = input.toLowerCase();
+    for (final device in devices) {
+      if (device.alias.toLowerCase() == lower || device.id == input) {
+        _hostCtrl.text = device.ip;
+        _portCtrl.text = device.port.toString();
+        return _ConnectTarget(device.ip, device.port);
+      }
+    }
+
+    final fallbackPort = portFromField ?? 53317;
+    return _ConnectTarget(input, fallbackPort);
+  }
+
+  _ConnectTarget? _parseHostPort(String input, int? fallbackPort) {
+    final uri = Uri.tryParse(input.contains('://') ? input : 'scn://$input');
+    if (uri != null && uri.host.isNotEmpty) {
+      return _ConnectTarget(
+          uri.host, uri.hasPort ? uri.port : (fallbackPort ?? 53317));
+    }
+    final colon = input.lastIndexOf(':');
+    if (colon > 0 && colon < input.length - 1) {
+      final host = input.substring(0, colon).trim();
+      final port = int.tryParse(input.substring(colon + 1).trim());
+      if (host.isNotEmpty && port != null) {
+        return _ConnectTarget(host, port);
+      }
+    }
+    return null;
+  }
+
+  String _digitsOnly(String value) => value.replaceAll(RegExp(r'[^0-9]'), '');
+
+  String _connectionCodeForId(String id) {
+    var hash = 0;
+    for (final unit in id.codeUnits) {
+      hash = (hash * 31 + unit) & 0x7fffffff;
+    }
+    return (hash % 1000000000).toString().padLeft(9, '0');
+  }
+
+  String _formatConnectionCode(String code) {
+    final digits = _digitsOnly(code).padLeft(9, '0');
+    return '${digits.substring(0, 3)} ${digits.substring(3, 6)} ${digits.substring(6, 9)}';
+  }
+
+  Future<void> _copyText(
+      BuildContext context, String value, String message) async {
+    await Clipboard.setData(ClipboardData(text: value));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+}
+
+class _ConnectTarget {
+  final String host;
+  final int port;
+
+  const _ConnectTarget(this.host, this.port);
 }
