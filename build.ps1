@@ -50,6 +50,73 @@ function Clear-Processes {
     Start-Sleep -Milliseconds 300
 }
 
+function Stop-SCNProcesses {
+    $running = Get-Process -Name "scn" -ErrorAction SilentlyContinue
+    if (-not $running) {
+        return $true
+    }
+
+    Write-Host "   Stopping running SCN before copying release..." -ForegroundColor Gray
+    foreach ($proc in $running) {
+        try {
+            Stop-Process -Id $proc.Id -Force -ErrorAction Stop
+        } catch {
+            Write-Host "   [FAIL] Cannot stop scn.exe (PID $($proc.Id)): $_" -ForegroundColor Red
+            Write-Host "   Close SCN manually or run this script as Administrator, then rebuild." -ForegroundColor Yellow
+            return $false
+        }
+    }
+
+    $deadline = (Get-Date).AddSeconds(5)
+    while ((Get-Date) -lt $deadline) {
+        if (-not (Get-Process -Name "scn" -ErrorAction SilentlyContinue)) {
+            Start-Sleep -Milliseconds 300
+            return $true
+        }
+        Start-Sleep -Milliseconds 200
+    }
+
+    Write-Host "   [FAIL] scn.exe is still running; release files are locked." -ForegroundColor Red
+    Write-Host "   Close SCN manually or run this script as Administrator, then rebuild." -ForegroundColor Yellow
+    return $false
+}
+
+function Copy-ReleaseDirectory {
+    param(
+        [string]$SourceDir,
+        [string]$OutDir
+    )
+
+    $tmpDir = Join-Path $ReleasesDir ("windows.tmp-" + [guid]::NewGuid().ToString("N"))
+    $oldDir = Join-Path $ReleasesDir ("windows.old-" + [guid]::NewGuid().ToString("N"))
+
+    try {
+        New-Item -ItemType Directory -Path $tmpDir -Force -ErrorAction Stop | Out-Null
+        Copy-Item (Join-Path $SourceDir "*") $tmpDir -Recurse -Force -ErrorAction Stop
+
+        if (Test-Path $OutDir) {
+            Rename-Item $OutDir $oldDir -ErrorAction Stop
+        }
+        Rename-Item $tmpDir $OutDir -ErrorAction Stop
+
+        if (Test-Path $oldDir) {
+            Remove-Item $oldDir -Recurse -Force -ErrorAction Stop
+        }
+        return $true
+    } catch {
+        Write-Host "   [FAIL] Cannot copy Windows release: $_" -ForegroundColor Red
+        Write-Host "   Usually this means SCN is still running from releases\windows." -ForegroundColor Yellow
+        Write-Host "   Close SCN manually or run this script as Administrator, then rebuild." -ForegroundColor Yellow
+
+        if ((Test-Path $OutDir) -eq $false -and (Test-Path $oldDir)) {
+            Rename-Item $oldDir $OutDir -ErrorAction SilentlyContinue
+        }
+        Remove-Item $tmpDir -Recurse -Force -ErrorAction SilentlyContinue
+        Remove-Item $oldDir -Recurse -Force -ErrorAction SilentlyContinue
+        return $false
+    }
+}
+
 # Find or install Flutter
 function Get-Flutter {
     Write-Host "`n>> Checking Flutter..." -ForegroundColor Cyan
@@ -167,10 +234,25 @@ function Build-Windows {
     
     Write-Host "   Building release..." -ForegroundColor Gray
     & $Flutter build windows --release
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "   [FAIL] Flutter Windows release build failed" -ForegroundColor Red
+        Pop-Location
+        return $false
+    }
     
     $exe = Join-Path $ScnDir "build\windows\x64\runner\Release\scn.exe"
     if (Test-Path $exe) {
-        Copy-Item (Join-Path $ScnDir "build\windows\x64\runner\Release\*") $outDir -Recurse -Force
+        if (-not (Stop-SCNProcesses)) {
+            Pop-Location
+            return $false
+        }
+
+        $releaseSource = Join-Path $ScnDir "build\windows\x64\runner\Release"
+        if (-not (Copy-ReleaseDirectory -SourceDir $releaseSource -OutDir $outDir)) {
+            Pop-Location
+            return $false
+        }
+
         $size = [math]::Round((Get-Item (Join-Path $outDir "scn.exe")).Length / 1MB, 1)
         Write-Host "   [OK] Windows build complete ($size MB)" -ForegroundColor Green
         Write-Host "   Output: $outDir\scn.exe" -ForegroundColor Gray
