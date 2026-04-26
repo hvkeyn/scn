@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:scn/models/device.dart';
 import 'package:scn/models/remote_desktop_models.dart';
@@ -30,6 +31,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   bool _wantControl = true;
   bool _wantAudio = false;
   List<String> _localIps = const [];
+  final Map<String, String> _savedLanPasswords = <String, String>{};
 
   @override
   void initState() {
@@ -663,52 +665,70 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
 
   Future<bool> _ensurePasswordForLanDevice(Device device) async {
     if (_passwordCtrl.text.trim().isNotEmpty) return true;
+    final saved = await _savedPasswordForDevice(device);
+    if (saved != null && saved.isNotEmpty) {
+      _passwordCtrl.text = saved;
+      return true;
+    }
 
     final ctrl = TextEditingController();
+    var remember = true;
     final result = await showDialog<String?>(
       context: context,
       builder: (context) {
-        return AlertDialog(
-          title: const Text('Пароль удалённого устройства'),
-          content: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text('${device.alias} • ${device.ip}:${device.port}'),
-              const SizedBox(height: 12),
-              TextField(
-                controller: ctrl,
-                autofocus: true,
-                obscureText: true,
-                decoration: const InputDecoration(
-                  labelText: 'Пароль удалённой машины',
-                  border: OutlineInputBorder(),
+        return StatefulBuilder(
+          builder: (context, setDialogState) {
+            return AlertDialog(
+              title: const Text('Пароль удалённого устройства'),
+              content: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('${device.alias} • ${device.ip}:${device.port}'),
+                  const SizedBox(height: 12),
+                  TextField(
+                    controller: ctrl,
+                    autofocus: true,
+                    obscureText: true,
+                    decoration: const InputDecoration(
+                      labelText: 'Пароль удалённой машины',
+                      border: OutlineInputBorder(),
+                    ),
+                    onSubmitted: (value) =>
+                        Navigator.of(context).pop(value.trim()),
+                  ),
+                  CheckboxListTile(
+                    contentPadding: EdgeInsets.zero,
+                    value: remember,
+                    onChanged: (value) =>
+                        setDialogState(() => remember = value ?? true),
+                    title: const Text('Запомнить пароль для этого устройства'),
+                    controlAffinity: ListTileControlAffinity.leading,
+                  ),
+                  Text(
+                    'Это пароль той машины, к которой подключаемся. '
+                    'Локальный пароль из блока "Ваш рабочий стол" нужен другим '
+                    'устройствам для входа к вам.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ],
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(null),
+                  child: const Text('Отмена'),
                 ),
-                onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Это пароль той машины, к которой подключаемся. '
-                'Локальный пароль из блока "Ваш рабочий стол" нужен другим '
-                'устройствам для входа к вам.',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ],
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(null),
-              child: const Text('Отмена'),
-            ),
-            TextButton(
-              onPressed: () => Navigator.of(context).pop(''),
-              child: const Text('Без пароля'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.of(context).pop(ctrl.text.trim()),
-              child: const Text('Подключиться'),
-            ),
-          ],
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(''),
+                  child: const Text('Без пароля'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.of(context).pop(ctrl.text.trim()),
+                  child: const Text('Подключиться'),
+                ),
+              ],
+            );
+          },
         );
       },
     );
@@ -716,9 +736,32 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     if (!mounted || result == null) return false;
     if (result.isNotEmpty) {
       _passwordCtrl.text = result;
+      if (remember) {
+        await _savePasswordForDevice(device, result);
+      }
     }
     return true;
   }
+
+  Future<String?> _savedPasswordForDevice(Device device) async {
+    final cached = _savedLanPasswords[device.id];
+    if (cached != null) return cached;
+    final prefs = await SharedPreferences.getInstance();
+    final saved = prefs.getString(_passwordPrefKey(device));
+    if (saved != null && saved.isNotEmpty) {
+      _savedLanPasswords[device.id] = saved;
+    }
+    return saved;
+  }
+
+  Future<void> _savePasswordForDevice(Device device, String password) async {
+    _savedLanPasswords[device.id] = password;
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_passwordPrefKey(device), password);
+  }
+
+  String _passwordPrefKey(Device device) =>
+      'rd_lan_password_${device.id}_${device.ip}_${device.port}';
 
   void _onManualConnect() {
     final target = _resolveConnectTarget();

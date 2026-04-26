@@ -31,6 +31,8 @@ class HostWindowManager {
   static int _savedHwnd = 0;
   static int _savedConsoleHwnd = 0;
 
+  static bool get hasActiveSessions => _activeSessions > 0;
+
   // Координаты "виртуального небытия" в Windows: окно с такими x/y
   // сохраняет свой HWND, не minimized, но не виден пользователю и не
   // принимает hit-test'ов от мыши.
@@ -54,6 +56,12 @@ class HostWindowManager {
     }
   }
 
+  static void keepHiddenIfNeeded() {
+    if (_activeSessions <= 0) return;
+    _hideMainWindow();
+    _hideConsoleWindow();
+  }
+
   static void _hideMainWindow() {
     if (!Platform.isWindows) return;
     try {
@@ -63,19 +71,25 @@ class HostWindowManager {
         AppLogger.log('HostWindowManager: main window not found');
         return;
       }
-      final rectPtr = calloc<RECT>();
-      try {
-        if (GetWindowRect(hwnd, rectPtr) != 0) {
-          _savedRect = _SavedRect(
-            left: rectPtr.ref.left,
-            top: rectPtr.ref.top,
-            width: rectPtr.ref.right - rectPtr.ref.left,
-            height: rectPtr.ref.bottom - rectPtr.ref.top,
-          );
-          _savedHwnd = hwnd;
+      if (_savedHwnd == 0) {
+        final rectPtr = calloc<RECT>();
+        try {
+          if (GetWindowRect(hwnd, rectPtr) != 0) {
+            _savedRect = _SavedRect(
+              left: rectPtr.ref.left,
+              top: rectPtr.ref.top,
+              width: rectPtr.ref.right - rectPtr.ref.left,
+              height: rectPtr.ref.bottom - rectPtr.ref.top,
+            );
+            _savedHwnd = hwnd;
+          }
+        } finally {
+          calloc.free(rectPtr);
         }
-      } finally {
-        calloc.free(rectPtr);
+      } else if (_savedHwnd != hwnd) {
+        AppLogger.log(
+          'HostWindowManager: keeping saved hwnd=$_savedHwnd, current hwnd=$hwnd',
+        );
       }
       const swpNoZorder = 0x0004;
       const swpNoActivate = 0x0010;

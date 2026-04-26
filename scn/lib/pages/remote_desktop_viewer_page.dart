@@ -346,6 +346,27 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     }
     final isDown = event is KeyDownEvent;
     final pressed = HardwareKeyboard.instance.logicalKeysPressed;
+    final ctrl = pressed.contains(LogicalKeyboardKey.controlLeft) ||
+        pressed.contains(LogicalKeyboardKey.controlRight);
+    final alt = pressed.contains(LogicalKeyboardKey.altLeft) ||
+        pressed.contains(LogicalKeyboardKey.altRight);
+    final meta = pressed.contains(LogicalKeyboardKey.metaLeft) ||
+        pressed.contains(LogicalKeyboardKey.metaRight);
+    final text = event.character;
+    if (isDown &&
+        !ctrl &&
+        !alt &&
+        !meta &&
+        text != null &&
+        text.isNotEmpty &&
+        !_isControlCharacter(text)) {
+      _client.sendInputEvent(RemoteInputEvent(
+        kind: RemoteInputEventKind.textInput,
+        text: text,
+        timestampUs: DateTime.now().microsecondsSinceEpoch,
+      ));
+      return KeyEventResult.handled;
+    }
     _client.sendInputEvent(RemoteInputEvent(
       kind: isDown ? RemoteInputEventKind.keyDown : RemoteInputEventKind.keyUp,
       keyCode: event.logicalKey.keyId,
@@ -353,15 +374,18 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       text: event.character,
       shift: pressed.contains(LogicalKeyboardKey.shiftLeft) ||
           pressed.contains(LogicalKeyboardKey.shiftRight),
-      ctrl: pressed.contains(LogicalKeyboardKey.controlLeft) ||
-          pressed.contains(LogicalKeyboardKey.controlRight),
-      alt: pressed.contains(LogicalKeyboardKey.altLeft) ||
-          pressed.contains(LogicalKeyboardKey.altRight),
-      meta: pressed.contains(LogicalKeyboardKey.metaLeft) ||
-          pressed.contains(LogicalKeyboardKey.metaRight),
+      ctrl: ctrl,
+      alt: alt,
+      meta: meta,
       timestampUs: DateTime.now().microsecondsSinceEpoch,
     ));
     return KeyEventResult.handled;
+  }
+
+  bool _isControlCharacter(String value) {
+    if (value.runes.length != 1) return false;
+    final code = value.runes.first;
+    return code < 0x20 || code == 0x7f;
   }
 
   RemoteMouseButton _mapButton(int btn) {

@@ -52,9 +52,11 @@ class WindowsInputInjector implements InputInjector {
   }
 
   void _sendMouseAbsolute(double normX, double normY) {
+    final point = _screenPoint(normX, normY);
+    SetCursorPos(point.$1, point.$2);
     // Нормируем 0..1 -> 0..65535 для MOUSEEVENTF_ABSOLUTE.
-    final x = (normX.clamp(0.0, 1.0) * 65535).round();
-    final y = (normY.clamp(0.0, 1.0) * 65535).round();
+    final x = _absoluteCoord(point.$1, _virtualLeft, _virtualWidth);
+    final y = _absoluteCoord(point.$2, _virtualTop, _virtualHeight);
     _sendOneMouseEvent(
       flags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
       x: x,
@@ -89,9 +91,38 @@ class WindowsInputInjector implements InputInjector {
       // Сначала явно ставим курсор в точку, затем отдельным событием жмём
       // кнопку. Некоторые приложения/заголовки окон хуже обрабатывают
       // "move + button" в одном INPUT, особенно рядом с системными кнопками.
-      _sendMouseAbsolute(x, y);
+      final point = _screenPoint(x, y);
+      SetCursorPos(point.$1, point.$2);
     }
     _sendOneMouseEvent(flags: flags, mouseData: data);
+  }
+
+  int get _virtualLeft =>
+      GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_XVIRTUALSCREEN);
+  int get _virtualTop =>
+      GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_YVIRTUALSCREEN);
+  int get _virtualWidth =>
+      GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXVIRTUALSCREEN);
+  int get _virtualHeight =>
+      GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYVIRTUALSCREEN);
+
+  (int, int) _screenPoint(double normX, double normY) {
+    final width = _virtualWidth <= 0
+        ? GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXSCREEN)
+        : _virtualWidth;
+    final height = _virtualHeight <= 0
+        ? GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYSCREEN)
+        : _virtualHeight;
+    final left = _virtualWidth <= 0 ? 0 : _virtualLeft;
+    final top = _virtualHeight <= 0 ? 0 : _virtualTop;
+    final x = left + (normX.clamp(0.0, 1.0) * (width - 1)).round();
+    final y = top + (normY.clamp(0.0, 1.0) * (height - 1)).round();
+    return (x, y);
+  }
+
+  int _absoluteCoord(int value, int origin, int extent) {
+    if (extent <= 1) return 0;
+    return (((value - origin) * 65535) / (extent - 1)).round().clamp(0, 65535);
   }
 
   void _sendMouseScroll({required double dx, required double dy}) {
