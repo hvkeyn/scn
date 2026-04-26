@@ -29,7 +29,8 @@ class RemoteDesktopViewerPage extends StatefulWidget {
 
 class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   late final RemoteDesktopClientService _client;
-  late final bool _ownsClient; // true если мы создали клиент сами; false если переиспользуем активный
+  late final bool
+      _ownsClient; // true если мы создали клиент сами; false если переиспользуем активный
   final FocusNode _focusNode = FocusNode();
   final GlobalKey _videoKey = GlobalKey();
   StreamSubscription? _errorSub;
@@ -168,12 +169,49 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   // ---------- input forwarding ----------
 
   Offset? _normalize(Offset local) {
-    final renderBox = _videoKey.currentContext?.findRenderObject() as RenderBox?;
+    final renderBox =
+        _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null || !renderBox.hasSize) return null;
     final size = renderBox.size;
     if (size.width == 0 || size.height == 0) return null;
-    final dx = (local.dx / size.width).clamp(0.0, 1.0);
-    final dy = (local.dy / size.height).clamp(0.0, 1.0);
+
+    // RTCVideoView рисует поток с objectFit=contain. Если соотношение сторон
+    // viewer-окна не совпадает с удаленным экраном, появляются черные поля.
+    // Координаты мыши должны считаться только по реальному прямоугольнику
+    // видео, иначе клик визуально уезжает вверх/вбок и не попадает в кнопки
+    // свернуть/закрыть у окон на удаленной машине.
+    final videoW = _client.videoRenderer.videoWidth > 0
+        ? _client.videoRenderer.videoWidth
+        : (_client.session?.stats?.frameWidth ?? 0);
+    final videoH = _client.videoRenderer.videoHeight > 0
+        ? _client.videoRenderer.videoHeight
+        : (_client.session?.stats?.frameHeight ?? 0);
+
+    var contentLeft = 0.0;
+    var contentTop = 0.0;
+    var contentWidth = size.width;
+    var contentHeight = size.height;
+    if (videoW > 0 && videoH > 0) {
+      final boxAspect = size.width / size.height;
+      final videoAspect = videoW / videoH;
+      if (boxAspect > videoAspect) {
+        contentHeight = size.height;
+        contentWidth = contentHeight * videoAspect;
+        contentLeft = (size.width - contentWidth) / 2;
+      } else {
+        contentWidth = size.width;
+        contentHeight = contentWidth / videoAspect;
+        contentTop = (size.height - contentHeight) / 2;
+      }
+    }
+
+    final x = local.dx - contentLeft;
+    final y = local.dy - contentTop;
+    if (x < 0 || y < 0 || x > contentWidth || y > contentHeight) {
+      return null;
+    }
+    final dx = (x / contentWidth).clamp(0.0, 1.0);
+    final dy = (y / contentHeight).clamp(0.0, 1.0);
     return Offset(dx, dy);
   }
 
@@ -295,9 +333,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     final isDown = event is KeyDownEvent;
     final pressed = HardwareKeyboard.instance.logicalKeysPressed;
     _client.sendInputEvent(RemoteInputEvent(
-      kind: isDown
-          ? RemoteInputEventKind.keyDown
-          : RemoteInputEventKind.keyUp,
+      kind: isDown ? RemoteInputEventKind.keyDown : RemoteInputEventKind.keyUp,
       keyCode: event.logicalKey.keyId,
       physicalKeyCode: event.physicalKey.usbHidUsage,
       text: event.character,
@@ -330,29 +366,17 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     final del = LogicalKeyboardKey.delete.keyId;
     _client
       ..sendInputEvent(RemoteInputEvent(
-          kind: RemoteInputEventKind.keyDown,
-          keyCode: ctrl,
-          timestampUs: ts))
+          kind: RemoteInputEventKind.keyDown, keyCode: ctrl, timestampUs: ts))
       ..sendInputEvent(RemoteInputEvent(
-          kind: RemoteInputEventKind.keyDown,
-          keyCode: alt,
-          timestampUs: ts))
+          kind: RemoteInputEventKind.keyDown, keyCode: alt, timestampUs: ts))
       ..sendInputEvent(RemoteInputEvent(
-          kind: RemoteInputEventKind.keyDown,
-          keyCode: del,
-          timestampUs: ts))
+          kind: RemoteInputEventKind.keyDown, keyCode: del, timestampUs: ts))
       ..sendInputEvent(RemoteInputEvent(
-          kind: RemoteInputEventKind.keyUp,
-          keyCode: del,
-          timestampUs: ts))
+          kind: RemoteInputEventKind.keyUp, keyCode: del, timestampUs: ts))
       ..sendInputEvent(RemoteInputEvent(
-          kind: RemoteInputEventKind.keyUp,
-          keyCode: alt,
-          timestampUs: ts))
+          kind: RemoteInputEventKind.keyUp, keyCode: alt, timestampUs: ts))
       ..sendInputEvent(RemoteInputEvent(
-          kind: RemoteInputEventKind.keyUp,
-          keyCode: ctrl,
-          timestampUs: ts));
+          kind: RemoteInputEventKind.keyUp, keyCode: ctrl, timestampUs: ts));
   }
 
   // ---------- UI ----------
@@ -419,12 +443,11 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       ),
       if (_controlActive)
         IconButton(
-          tooltip: _captureKeyboard
-              ? 'Stop capturing keyboard'
-              : 'Capture keyboard',
-          icon: Icon(_captureKeyboard ? Icons.keyboard : Icons.keyboard_alt_outlined),
-          onPressed: () =>
-              setState(() => _captureKeyboard = !_captureKeyboard),
+          tooltip:
+              _captureKeyboard ? 'Stop capturing keyboard' : 'Capture keyboard',
+          icon: Icon(
+              _captureKeyboard ? Icons.keyboard : Icons.keyboard_alt_outlined),
+          onPressed: () => setState(() => _captureKeyboard = !_captureKeyboard),
         ),
       if (_controlActive)
         IconButton(
@@ -469,7 +492,8 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.error_outline, size: 48, color: Colors.redAccent),
+              const Icon(Icons.error_outline,
+                  size: 48, color: Colors.redAccent),
               const SizedBox(height: 12),
               Text(_error!,
                   textAlign: TextAlign.center,
@@ -615,7 +639,8 @@ class _StatsPanel extends StatelessWidget {
               style: style),
           Text('Audio: ${stats.audioBitrateKbps.toStringAsFixed(0)} kbps',
               style: style),
-          Text('FPS: ${stats.framesPerSecond.toStringAsFixed(1)}', style: style),
+          Text('FPS: ${stats.framesPerSecond.toStringAsFixed(1)}',
+              style: style),
           Text('RTT: ${stats.roundTripTimeMs} ms', style: style),
           Text('Resolution: ${stats.frameWidth}x${stats.frameHeight}',
               style: style),

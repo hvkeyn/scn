@@ -26,7 +26,8 @@ class _HostSession {
   bool grantsControl;
   bool grantsAudio;
 
-  RemoteDesktopSessionStatus status = RemoteDesktopSessionStatus.pendingApproval;
+  RemoteDesktopSessionStatus status =
+      RemoteDesktopSessionStatus.pendingApproval;
   String? errorMessage;
 
   RTCPeerConnection? pc;
@@ -191,18 +192,14 @@ class RemoteDesktopHostService extends ChangeNotifier {
     bool grantsControl = req.wantsControl && !_settings.viewOnlyByDefault;
     final grantsAudio = req.wantsAudio && _settings.shareAudio;
 
-    final isTrusted =
-        _settings.trustedPeerIds.contains(req.viewerDeviceId);
+    final isTrusted = _settings.trustedPeerIds.contains(req.viewerDeviceId);
     final passwordOk = req.password != null &&
         _settings.password != null &&
         req.password == _settings.password;
 
     if (isTrusted) {
       authMode = RemoteDesktopAuthMode.trusted;
-    } else if (passwordOk &&
-        (_settings.accessMode == RemoteDesktopAccessMode.passwordOnly ||
-            _settings.accessMode ==
-                RemoteDesktopAccessMode.passwordOrPrompt)) {
+    } else if (passwordOk) {
       authMode = RemoteDesktopAuthMode.password;
     } else if (_settings.accessMode == RemoteDesktopAccessMode.passwordOnly) {
       return shelf.Response.forbidden(
@@ -265,8 +262,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
     // Watchdog: если viewer не успел открыть WS / упал — не блокируем хост
     // навсегда. Через 20с зависшая сессия будет автоматически закрыта.
-    session.wsConnectWatchdog =
-        Timer(const Duration(seconds: 20), () async {
+    session.wsConnectWatchdog = Timer(const Duration(seconds: 20), () async {
       if (_sessions[sessionId] != null && session.ws == null) {
         AppLogger.log(
             'RD host: watchdog dropping session $sessionId — viewer never connected WS');
@@ -347,7 +343,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
           } catch (e, st) {
             AppLogger.log(
                 'RD host: handler for ${signal.type.name} failed: $e\n$st');
-            await _failSession(session!,
+            await _failSession(
+                session!,
                 'Ошибка обработки сигнала ${signal.type.name} на хосте:\n$e',
                 st);
           }
@@ -374,8 +371,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
   Future<void> _startHostMedia(_HostSession session) async {
     try {
-      AppLogger.log(
-          'RD host: starting media for session ${session.sessionId} '
+      AppLogger.log('RD host: starting media for session ${session.sessionId} '
           '(audio=${session.grantsAudio}, fps=${_settings.defaultFps})');
 
       final iceServers = <Map<String, dynamic>>[
@@ -401,17 +397,15 @@ class RemoteDesktopHostService extends ChangeNotifier {
         stream = await _captureScreenStream(session);
       } catch (e, st) {
         AppLogger.log('RD host: screen capture failed: $e\n$st');
-        await _failSession(
-            session,
-            'Не удалось захватить экран хоста: $e',
-            st);
+        await _failSession(session, 'Не удалось захватить экран хоста: $e', st);
         return;
       }
 
       final videoTracks = stream.getVideoTracks();
       if (videoTracks.isEmpty) {
         AppLogger.log('RD host: getDisplayMedia returned no video tracks');
-        await _failSession(session,
+        await _failSession(
+            session,
             'Захват экрана не вернул видео-треков. '
             'Проверь, что выбран источник в системном окне выбора экрана.');
         try {
@@ -420,8 +414,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
         return;
       }
       session.screenStream = stream;
-      AppLogger.log(
-          'RD host: captured ${videoTracks.length} video track(s), '
+      AppLogger.log('RD host: captured ${videoTracks.length} video track(s), '
           '${stream.getAudioTracks().length} audio track(s)');
 
       for (final track in videoTracks) {
@@ -461,8 +454,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
           notifyListeners();
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
-          _failSession(session,
-              'WebRTC peer connection failed (ICE/firewall problem).');
+          _failSession(
+              session, 'WebRTC peer connection failed (ICE/firewall problem).');
         } else if (state ==
             RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
           _terminate(session, RemoteDesktopSessionStatus.closed);
@@ -473,7 +466,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
         AppLogger.log(
             'RD host: ICE connection state for ${session.sessionId} = $state');
         if (state == RTCIceConnectionState.RTCIceConnectionStateFailed) {
-          _failSession(session,
+          _failSession(
+              session,
               'ICE connection failed. Скорее всего разные подсети или фаервол '
               'блокирует UDP. Попробуй настроить TURN-сервер.');
         }
@@ -529,9 +523,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
     } catch (e, st) {
       AppLogger.log('Failed to start RD host media: $e\n$st');
       await _failSession(
-          session,
-          'Внутренняя ошибка при запуске стриминга экрана: $e',
-          st);
+          session, 'Внутренняя ошибка при запуске стриминга экрана: $e', st);
     }
   }
 
@@ -548,8 +540,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
     List<DesktopCapturerSource> sources;
     try {
-      sources = await desktopCapturer
-          .getSources(types: [SourceType.Screen]);
+      sources = await desktopCapturer.getSources(types: [SourceType.Screen]);
     } catch (e, st) {
       AppLogger.log('RD host: desktopCapturer.getSources failed: $e\n$st');
       rethrow;
@@ -558,8 +549,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
         'RD host: desktop sources: ${sources.map((s) => '${s.id}:${s.name}').join(', ')}');
 
     if (sources.isEmpty) {
-      throw StateError(
-          'desktopCapturer вернул 0 источников Screen. '
+      throw StateError('desktopCapturer вернул 0 источников Screen. '
           'Проверь, что приложение запущено на машине с дисплеем '
           '(не в headless RDP-сессии без активного входа).');
     }
@@ -579,8 +569,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
       },
     };
     try {
-      AppLogger.log(
-          'RD host: getDisplayMedia (native) sourceId=${source.id}…');
+      AppLogger.log('RD host: getDisplayMedia (native) sourceId=${source.id}…');
       final stream =
           await navigator.mediaDevices.getDisplayMedia(nativeConstraints);
       if (stream.getVideoTracks().isNotEmpty) return stream;
@@ -626,9 +615,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
   /// закрывает peer/ws.
   Future<void> _failSession(_HostSession session, String message,
       [StackTrace? stackTrace]) async {
-    final fullMessage = stackTrace == null
-        ? message
-        : '$message\n\nStack:\n$stackTrace';
+    final fullMessage =
+        stackTrace == null ? message : '$message\n\nStack:\n$stackTrace';
     AppLogger.log('RD host: failing session ${session.sessionId}: $message'
         '${stackTrace != null ? '\n$stackTrace' : ''}');
     try {
@@ -722,7 +710,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
         if (event.button != null) session.heldMouseButtons.add(event.button!);
         break;
       case RemoteInputEventKind.mouseUp:
-        if (event.button != null) session.heldMouseButtons.remove(event.button!);
+        if (event.button != null)
+          session.heldMouseButtons.remove(event.button!);
         break;
       case RemoteInputEventKind.keyDown:
         if (event.keyCode != null) session.heldKeys.add(event.keyCode!);
@@ -786,8 +775,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
   void _startStatsTimer(_HostSession session) {
     session.statsTimer?.cancel();
-    session.statsTimer =
-        Timer.periodic(const Duration(seconds: 2), (_) async {
+    session.statsTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
       final pc = session.pc;
       if (pc == null) return;
       try {
@@ -815,10 +803,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
               currentBytesSent += bytesSent;
             }
           } else if (report.type == 'remote-inbound-rtp') {
-            packetsLost +=
-                (values['packetsLost'] as num?)?.toInt() ?? 0;
-            rtt = (((values['roundTripTime'] as num?)?.toDouble() ?? 0) *
-                    1000)
+            packetsLost += (values['packetsLost'] as num?)?.toInt() ?? 0;
+            rtt = (((values['roundTripTime'] as num?)?.toDouble() ?? 0) * 1000)
                 .toInt();
           }
         }
@@ -945,12 +931,11 @@ class RemoteDesktopHostService extends ChangeNotifier {
     }
   }
 
-  Future<void> _terminate(_HostSession session,
-      RemoteDesktopSessionStatus status,
+  Future<void> _terminate(
+      _HostSession session, RemoteDesktopSessionStatus status,
       {String? error}) async {
     if (!_sessions.containsKey(session.sessionId)) return;
-    final wasStreaming =
-        session.status == RemoteDesktopSessionStatus.streaming;
+    final wasStreaming = session.status == RemoteDesktopSessionStatus.streaming;
     session.status = status;
     session.errorMessage = error;
     session.statsTimer?.cancel();
@@ -1006,11 +991,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
   }
 
   String _generateId() {
-    final bytes =
-        List<int>.generate(16, (_) => _random.nextInt(256));
-    return bytes
-        .map((b) => b.toRadixString(16).padLeft(2, '0'))
-        .join();
+    final bytes = List<int>.generate(16, (_) => _random.nextInt(256));
+    return bytes.map((b) => b.toRadixString(16).padLeft(2, '0')).join();
   }
 
   @override
