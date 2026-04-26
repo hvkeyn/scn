@@ -28,12 +28,10 @@ class WindowsInputInjector implements InputInjector {
         _sendMouseAbsolute(event.x ?? 0, event.y ?? 0);
         break;
       case RemoteInputEventKind.mouseDown:
-        _sendMouseButton(event.button, down: true,
-            x: event.x, y: event.y);
+        _sendMouseButton(event.button, down: true, x: event.x, y: event.y);
         break;
       case RemoteInputEventKind.mouseUp:
-        _sendMouseButton(event.button, down: false,
-            x: event.x, y: event.y);
+        _sendMouseButton(event.button, down: false, x: event.x, y: event.y);
         break;
       case RemoteInputEventKind.mouseScroll:
         _sendMouseScroll(
@@ -88,16 +86,12 @@ class WindowsInputInjector implements InputInjector {
         break;
     }
     if (x != null && y != null) {
-      flags |= MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK;
-      _sendOneMouseEvent(
-        flags: flags,
-        x: (x.clamp(0.0, 1.0) * 65535).round(),
-        y: (y.clamp(0.0, 1.0) * 65535).round(),
-        mouseData: data,
-      );
-    } else {
-      _sendOneMouseEvent(flags: flags, mouseData: data);
+      // Сначала явно ставим курсор в точку, затем отдельным событием жмём
+      // кнопку. Некоторые приложения/заголовки окон хуже обрабатывают
+      // "move + button" в одном INPUT, особенно рядом с системными кнопками.
+      _sendMouseAbsolute(x, y);
     }
+    _sendOneMouseEvent(flags: flags, mouseData: data);
   }
 
   void _sendMouseScroll({required double dx, required double dy}) {
