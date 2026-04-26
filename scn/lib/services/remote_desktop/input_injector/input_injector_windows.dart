@@ -6,6 +6,7 @@ import 'package:win32/win32.dart';
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 import 'package:scn/services/remote_desktop/input_injector/win_keymap.dart';
+import 'package:scn/utils/logger.dart';
 
 /// Windows-инжектор. Использует `SendInput` с абсолютными координатами
 /// в нормированной системе 0..65535, привязанной к виртуальному экрану,
@@ -171,7 +172,7 @@ class WindowsInputInjector implements InputInjector {
       ki.dwFlags = flags;
       ki.time = 0;
       ki.dwExtraInfo = 0;
-      SendInput(1, pInputs, sizeOf<INPUT>());
+      _sendInput(1, pInputs);
     } finally {
       calloc.free(pInputs);
     }
@@ -187,7 +188,7 @@ class WindowsInputInjector implements InputInjector {
       ki.dwFlags = KEYEVENTF_UNICODE | (down ? 0 : KEYEVENTF_KEYUP);
       ki.time = 0;
       ki.dwExtraInfo = 0;
-      SendInput(1, pInputs, sizeOf<INPUT>());
+      _sendInput(1, pInputs);
     } finally {
       calloc.free(pInputs);
     }
@@ -216,9 +217,20 @@ class WindowsInputInjector implements InputInjector {
       mi.dwFlags = flags;
       mi.time = 0;
       mi.dwExtraInfo = 0;
-      SendInput(1, pInputs, sizeOf<INPUT>());
+      _sendInput(1, pInputs);
     } finally {
       calloc.free(pInputs);
+    }
+  }
+
+  void _sendInput(int count, Pointer<INPUT> inputs) {
+    final sent = SendInput(count, inputs, sizeOf<INPUT>());
+    if (sent != count) {
+      AppLogger.log(
+        'WindowsInputInjector: SendInput sent $sent/$count, '
+        'lastError=${GetLastError()}. '
+        'If target window is elevated, run SCN as administrator.',
+      );
     }
   }
 
