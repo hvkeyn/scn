@@ -169,7 +169,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                 if (rd.password != null && rd.password!.isNotEmpty)
                   _copyBlock(
                     context: context,
-                    label: 'Пароль',
+                    label: 'Пароль для входа к вам',
                     value: rd.password!,
                     copyValue: rd.password!,
                     icon: Icons.password,
@@ -478,18 +478,22 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
           IconButton(
             tooltip: 'Open file manager',
             icon: const Icon(Icons.folder_open),
-            onPressed: () {
+            onPressed: () async {
               _hostCtrl.text = device.ip;
               _portCtrl.text = device.port.toString();
+              final ok = await _ensurePasswordForLanDevice(device);
+              if (!ok) return;
               _onManualOpenFiles();
             },
           ),
           FilledButton.icon(
             icon: const Icon(Icons.play_arrow),
             label: const Text('Connect'),
-            onPressed: () {
+            onPressed: () async {
               _hostCtrl.text = device.ip;
               _portCtrl.text = device.port.toString();
+              final ok = await _ensurePasswordForLanDevice(device);
+              if (!ok) return;
               _onManualConnect();
             },
           ),
@@ -656,6 +660,65 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
           ],
         ),
       );
+
+  Future<bool> _ensurePasswordForLanDevice(Device device) async {
+    if (_passwordCtrl.text.trim().isNotEmpty) return true;
+
+    final ctrl = TextEditingController();
+    final result = await showDialog<String?>(
+      context: context,
+      builder: (context) {
+        return AlertDialog(
+          title: const Text('Пароль удалённого устройства'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('${device.alias} • ${device.ip}:${device.port}'),
+              const SizedBox(height: 12),
+              TextField(
+                controller: ctrl,
+                autofocus: true,
+                obscureText: true,
+                decoration: const InputDecoration(
+                  labelText: 'Пароль удалённой машины',
+                  border: OutlineInputBorder(),
+                ),
+                onSubmitted: (value) => Navigator.of(context).pop(value.trim()),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Это пароль той машины, к которой подключаемся. '
+                'Локальный пароль из блока "Ваш рабочий стол" нужен другим '
+                'устройствам для входа к вам.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(null),
+              child: const Text('Отмена'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(''),
+              child: const Text('Без пароля'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(ctrl.text.trim()),
+              child: const Text('Подключиться'),
+            ),
+          ],
+        );
+      },
+    );
+    ctrl.dispose();
+    if (!mounted || result == null) return false;
+    if (result.isNotEmpty) {
+      _passwordCtrl.text = result;
+    }
+    return true;
+  }
 
   void _onManualConnect() {
     final target = _resolveConnectTarget();

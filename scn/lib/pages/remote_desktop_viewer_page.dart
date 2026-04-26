@@ -90,10 +90,18 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       _controlActive =
           _client.session?.inputMode == RemoteDesktopInputMode.full;
     });
+    if (_controlActive) {
+      _focusNode.requestFocus();
+    }
   }
 
   void _onClientChange() {
     if (!mounted) return;
+    final canControl =
+        _client.session?.inputMode == RemoteDesktopInputMode.full;
+    if (canControl && _controlActive && !_focusNode.hasFocus) {
+      _focusNode.requestFocus();
+    }
     setState(() {});
   }
 
@@ -244,16 +252,22 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   }
 
   void _sendButton(PointerDownEvent ev) {
+    if (!_focusNode.hasFocus) {
+      _focusNode.requestFocus();
+    }
     AppLogger.log(
         'RD viewer: PointerDown buttons=${ev.buttons} held=$_pressedMouseButtons '
         'controlActive=$_controlActive');
     if (!_controlActive) return;
+    final n = _normalize(ev.localPosition);
+    if (n == null) {
+      return;
+    }
     // Отправляем mouseDown ТОЛЬКО для тех кнопок, которые именно сейчас стали
     // нажатыми (новые в маске). Потом запоминаем актуальную маску.
     final newlyPressed = ev.buttons & ~_pressedMouseButtons;
     _pressedMouseButtons = ev.buttons;
     if (newlyPressed == 0) return;
-    final n = _normalize(ev.localPosition);
     final ts = DateTime.now().microsecondsSinceEpoch;
     for (final b in const [
       kPrimaryMouseButton,
