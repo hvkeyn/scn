@@ -16,6 +16,14 @@ add_executable(${BINARY_NAME} WIN32
   "runner.exe.manifest"
 )
 
+# Remote desktop control on Windows must run elevated; otherwise UIPI blocks
+# injected mouse/keyboard events for elevated target windows.
+set_target_properties(${BINARY_NAME} PROPERTIES
+  VS_GLOBAL_UACExecutionLevel "requireAdministrator"
+  VS_GLOBAL_UACUIAccess "false")
+target_link_options(${BINARY_NAME} PRIVATE
+  "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
