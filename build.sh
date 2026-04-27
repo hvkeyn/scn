@@ -146,10 +146,37 @@ build_linux() {
     $FL build linux --release
     
     if [ -f "build/linux/x64/release/bundle/scn" ]; then
-        cp -r build/linux/x64/release/bundle/* "$RELEASES_DIR/linux/"
+        rm -rf "$RELEASES_DIR/linux"
+        mkdir -p "$RELEASES_DIR/linux"
+        cp -a build/linux/x64/release/bundle/. "$RELEASES_DIR/linux/"
+        chmod +x "$RELEASES_DIR/linux/scn"
+        cat > "$RELEASES_DIR/linux/run_scn.sh" <<'EOF'
+#!/usr/bin/env bash
+set -e
+cd "$(dirname "$0")"
+chmod +x ./scn 2>/dev/null || true
+exec ./scn "$@"
+EOF
+        chmod +x "$RELEASES_DIR/linux/run_scn.sh"
+        cat > "$RELEASES_DIR/linux/README_LINUX.txt" <<'EOF'
+SCN Linux bundle
+
+Run from this directory:
+  ./scn
+
+If the executable bit was lost after copying/unzipping:
+  chmod +x ./scn
+  ./scn
+
+Or use:
+  bash run_scn.sh
+EOF
+        tar -C "$RELEASES_DIR" -czf "$RELEASES_DIR/scn-linux-x64.tar.gz" linux
         local SIZE=$(du -h "$RELEASES_DIR/linux/scn" | cut -f1)
         echo -e "   ${GREEN}[OK]${NC} Linux build complete ($SIZE)"
         echo -e "   ${GRAY}Output: $RELEASES_DIR/linux/scn${NC}"
+        echo -e "   ${GRAY}Archive: $RELEASES_DIR/scn-linux-x64.tar.gz${NC}"
+        echo -e "   ${GRAY}Run: cd $RELEASES_DIR/linux && ./scn${NC}"
         return 0
     fi
     
@@ -219,8 +246,9 @@ if [ "$BUILD_LINUX" = "0" ] && [ "$BUILD_WINDOWS" = "0" ]; then
     BUILD_LINUX=1
 fi
 
-# Get Flutter
-FLUTTER=$(get_flutter)
+# Get Flutter. The helper prints progress messages, so keep only its final
+# line as the executable path while still showing progress in the terminal.
+FLUTTER=$(get_flutter | tee /dev/stderr | tail -n 1)
 
 if [ -z "$FLUTTER" ]; then
     echo -e "\n${RED}[ERROR]${NC} Cannot install Flutter!"
