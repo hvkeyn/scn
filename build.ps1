@@ -330,9 +330,52 @@ echo "BUILD_OK"
     
     $linuxExe = Join-Path $ScnDir "build\linux\x64\release\bundle\scn"
     if (Test-Path $linuxExe) {
-        Copy-Item (Join-Path $ScnDir "build\linux\x64\release\bundle\*") $outDir -Recurse -Force
+        $packageScript = @"
+#!/bin/bash
+set -e
+bundle="$wslPath/scn/build/linux/x64/release/bundle"
+out="$wslPath/releases/linux"
+archive="$wslPath/releases/scn-linux-x64.tar.gz"
+rm -rf "`$out"
+mkdir -p "`$out"
+cp -a "`$bundle"/. "`$out"/
+chmod +x "`$out/scn"
+cat > "`$out/run_scn.sh" <<'EOF'
+#!/usr/bin/env bash
+set -e
+cd "`$(dirname "`$0")"
+chmod +x ./scn 2>/dev/null || true
+exec ./scn "`$@"
+EOF
+chmod +x "`$out/run_scn.sh"
+cat > "`$out/README_LINUX.txt" <<'EOF'
+SCN Linux bundle
+
+Run from this directory:
+  ./scn
+
+If the executable bit was lost after copying/unzipping:
+  chmod +x ./scn
+  ./scn
+
+Or use:
+  bash run_scn.sh
+EOF
+tar -C "$wslPath/releases" -czf "`$archive" linux
+"@
+        $packageScriptFile = Join-Path $ProjectDir "._package_linux.sh"
+        $packageScript.Replace("`r`n", "`n") | Set-Content $packageScriptFile -NoNewline -Encoding UTF8
+        wsl bash -c "chmod +x '$wslPath/._package_linux.sh' && '$wslPath/._package_linux.sh'"
+        $packageExitCode = $LASTEXITCODE
+        Remove-Item $packageScriptFile -Force -ErrorAction SilentlyContinue
+        if ($packageExitCode -ne 0) {
+            Write-Host "   [FAIL] Linux release packaging failed" -ForegroundColor Red
+            return $false
+        }
         Write-Host "   [OK] Linux build complete" -ForegroundColor Green
-        Write-Host "   Output: $outDir" -ForegroundColor Gray
+        Write-Host "   Output: $outDir\scn" -ForegroundColor Gray
+        Write-Host "   Launcher: $outDir\run_scn.sh" -ForegroundColor Gray
+        Write-Host "   Archive: $ReleasesDir\scn-linux-x64.tar.gz" -ForegroundColor Gray
         return $true
     }
     
