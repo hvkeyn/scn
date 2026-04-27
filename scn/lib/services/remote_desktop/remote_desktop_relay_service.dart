@@ -10,8 +10,7 @@ import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/utils/logger.dart';
 
-const String defaultRemoteDesktopRelayUrl =
-    'wss://mynod.duckdns.org/scn-relay/ws';
+const String defaultRemoteDesktopRelayUrl = 'ws://5.187.4.132:53319/ws';
 const String defaultRemoteDesktopRelayConfigUrl =
     'https://terza.telsys.online/scn_relay_config.php';
 
