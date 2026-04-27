@@ -1,4 +1,3 @@
-import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -18,24 +17,26 @@ import 'package:scn/utils/logger.dart';
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
-  
+
   // Initialize file logger
   await AppLogger.init();
-  
+
   // Initialize test config from command line args
   TestConfig.init(args);
   final testConfig = TestConfig.current;
-  
+
   if (testConfig.isTestMode) {
     debugPrint('╔══════════════════════════════════════╗');
-    debugPrint('║  TEST MODE - Instance #${testConfig.instanceNumber + 1}              ║');
+    debugPrint(
+        '║  TEST MODE - Instance #${testConfig.instanceNumber + 1}              ║');
     debugPrint('║  HTTP Port: ${testConfig.httpPort}                   ║');
     debugPrint('║  Mesh Port: ${testConfig.meshPort}                   ║');
     debugPrint('╚══════════════════════════════════════╝');
   }
-  
+
   // Kill other instances only in normal mode (not test mode)
-  if (!testConfig.isTestMode && defaultTargetPlatform == TargetPlatform.windows) {
+  if (!testConfig.isTestMode &&
+      defaultTargetPlatform == TargetPlatform.windows) {
     try {
       final killedCount = await ProcessManager.killOtherInstances();
       if (killedCount > 0) {
@@ -46,7 +47,7 @@ void main(List<String> args) async {
       debugPrint('Warning: Could not kill other instances: $e');
     }
   }
-  
+
   // Create providers
   final deviceProvider = DeviceProvider();
   final receiveProvider = ReceiveProvider();
@@ -54,7 +55,7 @@ void main(List<String> args) async {
   final chatProvider = ChatProvider();
   final remotePeerProvider = RemotePeerProvider();
   final desktopIntegrationService = DesktopIntegrationService();
-  
+
   // Initialize services
   final appService = AppService();
   appService.setProviders(
@@ -63,31 +64,31 @@ void main(List<String> args) async {
     deviceProvider: deviceProvider,
     peerProvider: remotePeerProvider,
   );
-  
+
   // Load device alias (or generate if first run)
   // Test instances automatically get suffix and separate storage
   await appService.loadDeviceAlias();
-  
+
   // Set device ID for all providers (enables per-device storage)
   final deviceId = appService.deviceId;
   final deviceAlias = appService.deviceAlias;
-  
+
   // Set device ID for logger to distinguish processes
   AppLogger.setDeviceId(deviceId);
   AppLogger.log('Device alias: $deviceAlias');
-  
+
   chatProvider.setMyInfo(deviceId: deviceId, alias: deviceAlias);
   receiveProvider.setMyDeviceId(deviceId);
   sendProvider.setMyDeviceId(deviceId);
-  
+
   // Load saved remote peers
   await remotePeerProvider.load();
-  
+
   // Initialize tray & autostart (skip in test mode)
   if (!testConfig.isTestMode) {
     await desktopIntegrationService.init();
   }
-  
+
   try {
     // Pass test config port to initialize
     await appService.initialize(port: testConfig.httpPort);
@@ -96,7 +97,7 @@ void main(List<String> args) async {
     debugPrint('Warning: Failed to initialize services: $e');
     debugPrint('App will continue but some features may not work.');
   }
-  
+
   runApp(
     MultiProvider(
       providers: [
@@ -110,7 +111,8 @@ void main(List<String> args) async {
         ChangeNotifierProvider.value(
             value: appService.remoteDesktopHostService),
         ChangeNotifierProvider.value(
-            value: appService.remoteFileHostService),
+            value: appService.remoteDesktopRelayService),
+        ChangeNotifierProvider.value(value: appService.remoteFileHostService),
       ],
       child: const SCNApp(),
     ),

@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
@@ -21,6 +22,8 @@ class RemoteDesktopConnectParams {
   final bool wantControl;
   final bool wantAudio;
   final bool useHttps;
+  final String? relayUrl;
+  final String? relayTargetId;
 
   const RemoteDesktopConnectParams({
     required this.host,
@@ -31,10 +34,17 @@ class RemoteDesktopConnectParams {
     this.wantControl = false,
     this.wantAudio = false,
     this.useHttps = false,
+    this.relayUrl,
+    this.relayTargetId,
   });
 
   String get baseHttpUrl => '${useHttps ? 'https' : 'http'}://$host:$port';
   String get baseWsUrl => '${useHttps ? 'wss' : 'ws'}://$host:$port';
+  bool get useRelay =>
+      relayUrl != null &&
+      relayUrl!.isNotEmpty &&
+      relayTargetId != null &&
+      relayTargetId!.isNotEmpty;
 }
 
 /// Клиентская сторона удалённого desktop'а.
@@ -76,6 +86,8 @@ class RemoteDesktopClientService extends ChangeNotifier {
   Timer? _statsTimer;
   bool _gotVideoTrack = false;
   bool _peerEverConnected = false;
+  String? _relaySessionId;
+  List<Map<String, dynamic>> _relayIceServers = const [];
 
   RTCVideoRenderer get videoRenderer => _videoRenderer;
   bool get isVideoReady => _videoRendererReady;
@@ -100,6 +112,9 @@ class RemoteDesktopClientService extends ChangeNotifier {
     await _ensureRendererInitialized();
     _lastParams = params;
     _setActive(this);
+    if (params.useRelay) {
+      return _connectViaRelay(params);
+    }
     try {
       final reqBody = RemoteDesktopRequest(
         viewerDeviceId: params.myDeviceId,
@@ -164,6 +179,146 @@ class RemoteDesktopClientService extends ChangeNotifier {
     }
   }
 
+  Future<bool> _connectViaRelay(RemoteDesktopConnectParams params) async {
+    try {
+      final wsUri = Uri.parse(params.relayUrl!);
+      final client = HttpClient()
+        ..badCertificateCallback = (_, __, ___) => true;
+      final ws = IOWebSocketChannel.connect(
+        wsUri,
+        customClient: client,
+        connectTimeout: const Duration(seconds: 10),
+      );
+      _ws = ws;
+
+      final welcome = Completer<void>();
+      final responseCompleter = Completer<RemoteDesktopRequestResponse>();
+      final requestId = DateTime.now().microsecondsSinceEpoch.toString();
+
+      _wsSub = ws.stream.listen(
+        (data) async {
+          try {
+            final raw = data is String ? data : utf8.decode(data as List<int>);
+            final message = jsonDecode(raw) as Map<String, dynamic>;
+            final type = message['type']?.toString();
+            final payload =
+                (message['payload'] as Map?)?.cast<String, dynamic>() ??
+                    const {};
+            switch (type) {
+              case 'welcome':
+                _relayIceServers = _parseIceServers(payload['iceServers']);
+                if (!welcome.isCompleted) welcome.complete();
+                break;
+              case 'rdResponse':
+                if (payload['requestId']?.toString() == requestId &&
+                    !responseCompleter.isCompleted) {
+                  _relaySessionId = payload['relaySessionId']?.toString();
+                  final responseJson =
+                      (payload['response'] as Map?)?.cast<String, dynamic>() ??
+                          const {};
+                  responseCompleter.complete(
+                      RemoteDesktopRequestResponse.fromJson(responseJson));
+                }
+                break;
+              case 'rdSignal':
+                final signalJson =
+                    (payload['signal'] as Map?)?.cast<String, dynamic>();
+                if (signalJson != null) {
+                  await _handleSignal(RemoteDesktopSignal.fromJson(signalJson));
+                }
+                break;
+              case 'rdBye':
+                await _shutdown(RemoteDesktopSessionStatus.closed,
+                    error: payload['reason']?.toString());
+                break;
+              case 'error':
+                final reason = payload['reason']?.toString() ?? 'Relay error';
+                _emitError(reason);
+                if (!responseCompleter.isCompleted) {
+                  responseCompleter.complete(const RemoteDesktopRequestResponse(
+                    status: RemoteDesktopRequestStatus.rejected,
+                    errorMessage: 'Relay error',
+                  ));
+                }
+                break;
+            }
+          } catch (e, st) {
+            AppLogger.log('RD relay client message error: $e\n$st');
+          }
+        },
+        onDone: () => _shutdown(RemoteDesktopSessionStatus.closed),
+        onError: (e) {
+          _emitError('Relay WebSocket error: $e');
+          _shutdown(RemoteDesktopSessionStatus.failed, error: e.toString());
+        },
+        cancelOnError: false,
+      );
+
+      ws.sink.add(jsonEncode({
+        'type': 'hello',
+        'payload': {
+          'role': 'rdViewer',
+          'deviceId': params.myDeviceId,
+          'alias': params.myAlias,
+        },
+      }));
+      await welcome.future.timeout(const Duration(seconds: 10));
+
+      final reqBody = RemoteDesktopRequest(
+        viewerDeviceId: params.myDeviceId,
+        viewerAlias: params.myAlias,
+        password: params.password,
+        wantsControl: params.wantControl,
+        wantsAudio: params.wantAudio,
+      );
+      ws.sink.add(jsonEncode({
+        'type': 'rdRequest',
+        'payload': {
+          'requestId': requestId,
+          'targetDeviceId': params.relayTargetId,
+          'viewerAlias': params.myAlias,
+          'request': reqBody.toJson(),
+        },
+      }));
+
+      final result =
+          await responseCompleter.future.timeout(const Duration(seconds: 60));
+      if (result.status != RemoteDesktopRequestStatus.accepted ||
+          result.sessionId == null ||
+          result.sessionToken == null ||
+          _relaySessionId == null) {
+        _emitError(result.errorMessage ??
+            'Relay host rejected the session (${result.status.name})');
+        return false;
+      }
+
+      _session = RemoteDesktopSession(
+        sessionId: result.sessionId!,
+        role: RemoteDesktopRole.viewer,
+        peerId: params.relayTargetId!,
+        peerAlias: params.host,
+        peerAddress: 'relay',
+        peerPort: 0,
+        status: RemoteDesktopSessionStatus.negotiating,
+        authMode: result.grantsAudio
+            ? RemoteDesktopAuthMode.password
+            : RemoteDesktopAuthMode.prompt,
+        inputMode: result.grantsControl
+            ? RemoteDesktopInputMode.full
+            : RemoteDesktopInputMode.viewOnly,
+        audioEnabled: result.grantsAudio,
+        createdAt: DateTime.now(),
+      );
+      _sessionToken = result.sessionToken;
+      notifyListeners();
+      return true;
+    } catch (e, st) {
+      AppLogger.log('RD relay client connect error: $e\n$st');
+      _emitError('Relay connect error: $e');
+      return false;
+    }
+  }
+
   Future<void> _openWebSocket(RemoteDesktopConnectParams params,
       RemoteDesktopRequestResponse result) async {
     final wsUri =
@@ -200,8 +355,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
         AppLogger.log('RD client: WS closed by host '
             '(gotVideo=$_gotVideoTrack, everConnected=$_peerEverConnected)');
         if (!_gotVideoTrack && !_peerEverConnected) {
-          _emitError(
-              'Хост закрыл соединение до того, как пошёл видеопоток. '
+          _emitError('Хост закрыл соединение до того, как пошёл видеопоток. '
               'Проверь на хост-машине: появилось ли окно выбора экрана? '
               'Был ли источник выбран? Не выскакивало ли уведомление об ошибке?');
         }
@@ -246,8 +400,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
         if (reason != null && reason.isNotEmpty) {
           _emitError('Хост сообщил причину закрытия:\n$reason');
         } else if (!_gotVideoTrack && !_peerEverConnected) {
-          _emitError(
-              'Хост завершил сессию до старта видеопотока. '
+          _emitError('Хост завершил сессию до старта видеопотока. '
               'Скорее всего на хосте либо отменили выбор экрана, '
               'либо захват экрана не удался.');
         }
@@ -277,15 +430,40 @@ class RemoteDesktopClientService extends ChangeNotifier {
     }
   }
 
+  List<Map<String, dynamic>> _parseIceServers(Object? raw) {
+    if (raw is! List) return const [];
+    return raw
+        .whereType<Map>()
+        .map((entry) => entry.cast<String, dynamic>())
+        .toList(growable: false);
+  }
+
+  void _sendSignal(RemoteDesktopSignal signal) {
+    final relaySessionId = _relaySessionId;
+    if (relaySessionId != null) {
+      _ws?.sink.add(jsonEncode({
+        'type': 'rdSignal',
+        'payload': {
+          'relaySessionId': relaySessionId,
+          'signal': signal.toJson(),
+        },
+      }));
+      return;
+    }
+    _ws?.sink.add(jsonEncode(signal.toJson()));
+  }
+
   Future<void> _initiateOffer() async {
-    final iceServers = <Map<String, dynamic>>[
-      {
-        'urls': [
-          'stun:stun.l.google.com:19302',
-          'stun:stun1.l.google.com:19302',
-        ],
-      },
-    ];
+    final iceServers = _relayIceServers.isNotEmpty
+        ? _relayIceServers
+        : <Map<String, dynamic>>[
+            {
+              'urls': [
+                'stun:stun.l.google.com:19302',
+                'stun:stun1.l.google.com:19302',
+              ],
+            },
+          ];
     final pc = await createPeerConnection({
       'iceServers': iceServers,
       'sdpSemantics': 'unified-plan',
@@ -306,14 +484,14 @@ class RemoteDesktopClientService extends ChangeNotifier {
     };
 
     pc.onIceCandidate = (RTCIceCandidate candidate) {
-      _ws?.sink.add(jsonEncode(RemoteDesktopSignal(
+      _sendSignal(RemoteDesktopSignal(
         type: RemoteDesktopSignalType.iceCandidate,
         payload: {
           'candidate': candidate.candidate,
           'sdpMid': candidate.sdpMid,
           'sdpMLineIndex': candidate.sdpMLineIndex,
         },
-      ).toJson()));
+      ));
     };
 
     pc.onConnectionState = (state) {
@@ -326,17 +504,14 @@ class RemoteDesktopClientService extends ChangeNotifier {
         );
         notifyListeners();
         _startStatsTimer();
-      } else if (state ==
-          RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
+      } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateFailed) {
         if (!_peerEverConnected) {
-          _emitError(
-              'Не удалось установить WebRTC-соединение (ICE failed). '
+          _emitError('Не удалось установить WebRTC-соединение (ICE failed). '
               'Возможно, фаервол / разные подсети.');
         }
         _shutdown(RemoteDesktopSessionStatus.failed,
             error: 'WebRTC connection failed');
-      } else if (state ==
-          RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
+      } else if (state == RTCPeerConnectionState.RTCPeerConnectionStateClosed) {
         _shutdown(RemoteDesktopSessionStatus.closed);
       }
     };
@@ -370,13 +545,13 @@ class RemoteDesktopClientService extends ChangeNotifier {
 
     final offer = await pc.createOffer();
     await pc.setLocalDescription(offer);
-    _ws?.sink.add(jsonEncode(RemoteDesktopSignal(
+    _sendSignal(RemoteDesktopSignal(
       type: RemoteDesktopSignalType.offer,
       payload: {
         'sdp': offer.sdp,
         'type': offer.type,
       },
-    ).toJson()));
+    ));
   }
 
   /// Послать input event на хост (no-op если канал не открыт или нет прав).
@@ -423,13 +598,13 @@ class RemoteDesktopClientService extends ChangeNotifier {
 
   /// Запросить смену качества (новый битрейт/FPS).
   void requestQuality({int? bitrateKbps, int? fps}) {
-    _ws?.sink.add(jsonEncode(RemoteDesktopSignal(
+    _sendSignal(RemoteDesktopSignal(
       type: RemoteDesktopSignalType.qualityChange,
       payload: {
         if (bitrateKbps != null) 'bitrateKbps': bitrateKbps,
         if (fps != null) 'fps': fps,
       },
-    ).toJson()));
+    ));
   }
 
   void _startStatsTimer() {
@@ -462,10 +637,10 @@ class RemoteDesktopClientService extends ChangeNotifier {
             }
           } else if (report.type == 'candidate-pair') {
             if (values['state'] == 'succeeded') {
-              rtt = (((values['currentRoundTripTime'] as num?)?.toDouble() ??
-                          0) *
-                      1000)
-                  .toInt();
+              rtt =
+                  (((values['currentRoundTripTime'] as num?)?.toDouble() ?? 0) *
+                          1000)
+                      .toInt();
             }
           }
         }
@@ -498,14 +673,13 @@ class RemoteDesktopClientService extends ChangeNotifier {
     if (session != null && token != null) {
       try {
         // Best-effort сообщение хосту, что мы уходим.
-        _ws?.sink.add(jsonEncode(
-            const RemoteDesktopSignal(type: RemoteDesktopSignalType.bye)
-                .toJson()));
+        _sendSignal(
+            const RemoteDesktopSignal(type: RemoteDesktopSignalType.bye));
       } catch (_) {}
       // Подстраховка: REST end-endpoint. Даже если WS успел оборваться или
       // bye не дошёл, хост гарантированно очистит сессию (иначе ловим
       // "Host is already serving" при повторном Connect).
-      if (params != null) {
+      if (params != null && !params.useRelay) {
         unawaited(http
             .post(Uri.parse(
                 '${params.baseHttpUrl}/api/rd/end?sessionId=${session.sessionId}&token=$token'))
@@ -524,6 +698,8 @@ class RemoteDesktopClientService extends ChangeNotifier {
     if (_disposed) return;
     _statsTimer?.cancel();
     _statsTimer = null;
+    _relaySessionId = null;
+    _relayIceServers = const [];
     try {
       await _wsSub?.cancel();
     } catch (_) {}

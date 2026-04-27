@@ -15,6 +15,7 @@ import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/services/app_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_client_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
+import 'package:scn/services/remote_desktop/remote_desktop_relay_service.dart';
 import 'package:scn/utils/logger.dart';
 
 class RemoteDesktopPage extends StatefulWidget {
@@ -93,6 +94,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
             ),
             const SizedBox(height: 16),
             _myAccessCard(context, app, settings),
+            const SizedBox(height: 16),
+            _wanAccessCard(context),
             const SizedBox(height: 16),
             _hostStatusCard(context, settings),
             const SizedBox(height: 16),
@@ -256,6 +259,73 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     );
   }
 
+  Widget _wanAccessCard(BuildContext context) {
+    final relay = context.watch<RemoteDesktopRelayService>();
+    final scheme = Theme.of(context).colorScheme;
+    final statusText = switch (relay.status) {
+      RemoteDesktopRelayStatus.disabled => 'Отключён',
+      RemoteDesktopRelayStatus.connecting => 'Подключение к relay...',
+      RemoteDesktopRelayStatus.online => 'Онлайн через VPS',
+      RemoteDesktopRelayStatus.offline => 'Нет соединения с relay',
+      RemoteDesktopRelayStatus.error => 'Ошибка relay',
+    };
+    final code = relay.connectionCode;
+    return Card(
+      color: relay.isOnline ? scheme.tertiaryContainer : null,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.public,
+                    color: relay.isOnline ? scheme.onTertiaryContainer : null),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text('WAN-доступ через сервер',
+                      style: Theme.of(context).textTheme.titleMedium),
+                ),
+                Chip(label: Text(statusText)),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 12,
+              runSpacing: 12,
+              children: [
+                _copyBlock(
+                  context: context,
+                  label: 'WAN ID',
+                  value: _formatConnectionCode(code),
+                  copyValue: code,
+                  icon: Icons.cloud_queue,
+                ),
+                _copyBlock(
+                  context: context,
+                  label: 'Relay',
+                  value: relay.relayUrl,
+                  copyValue: relay.relayUrl,
+                  icon: Icons.route,
+                ),
+              ],
+            ),
+            if (relay.lastError != null) ...[
+              const SizedBox(height: 8),
+              Text(relay.lastError!, style: TextStyle(color: scheme.error)),
+            ],
+            const SizedBox(height: 8),
+            Text(
+              'Для подключения из интернета введите WAN ID в поле подключения. '
+              'SCN использует relay/TURN, входящие порты на домашнем роутере не нужны.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _hostStatusCard(BuildContext context, RemoteDesktopSettings rd) {
     return Card(
       child: Padding(
@@ -366,7 +436,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                   child: TextField(
                     controller: _hostCtrl,
                     decoration: const InputDecoration(
-                      labelText: 'ID, IP, host или IP:порт',
+                      labelText: 'WAN/LAN ID, IP, host или IP:порт',
                       helperText: 'Например: 256 884 790 или 192.168.1.9:53317',
                       border: OutlineInputBorder(),
                     ),
@@ -764,6 +834,31 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
       'rd_lan_password_${device.id}_${device.ip}_${device.port}';
 
   void _onManualConnect() {
+    final input = _hostCtrl.text.trim();
+    final normalizedCode = _digitsOnly(input);
+    final looksLikeCode = RegExp(r'^[\d\s-]+$').hasMatch(input);
+    if (looksLikeCode &&
+        normalizedCode.length >= 6 &&
+        !_hasLanDeviceForCode(normalizedCode)) {
+      final app = context.read<AppService>();
+      final relay = context.read<RemoteDesktopRelayService>();
+      final params = RemoteDesktopConnectParams(
+        host: 'WAN ${_formatConnectionCode(normalizedCode.padLeft(9, '0'))}',
+        port: 0,
+        myDeviceId: app.deviceId,
+        myAlias: app.deviceAlias,
+        password: _passwordCtrl.text.isEmpty ? null : _passwordCtrl.text,
+        wantControl: _wantControl,
+        wantAudio: _wantAudio,
+        relayUrl: relay.relayUrl,
+        relayTargetId: normalizedCode,
+      );
+      Navigator.of(context).push(MaterialPageRoute(
+        builder: (_) => RemoteDesktopViewerPage(params: params),
+      ));
+      return;
+    }
+
     final target = _resolveConnectTarget();
     if (target == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -784,6 +879,17 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     Navigator.of(context).push(MaterialPageRoute(
       builder: (_) => RemoteDesktopViewerPage(params: params),
     ));
+  }
+
+  bool _hasLanDeviceForCode(String normalizedCode) {
+    final devices = context.read<DeviceProvider>().devices;
+    for (final device in devices) {
+      final deviceCode = _connectionCodeForId(device.id);
+      if (deviceCode == normalizedCode || deviceCode.endsWith(normalizedCode)) {
+        return true;
+      }
+    }
+    return false;
   }
 
   void _onManualOpenFiles() {

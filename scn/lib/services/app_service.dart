@@ -3,6 +3,7 @@ import 'package:scn/services/http_server_service.dart';
 import 'package:scn/services/discovery_service.dart';
 import 'package:scn/services/mesh_network_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
+import 'package:scn/services/remote_desktop/remote_desktop_relay_service.dart';
 import 'package:scn/services/remote_desktop/remote_file_host_service.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/providers/chat_provider.dart';
@@ -22,8 +23,10 @@ class AppService extends ChangeNotifier {
   final DiscoveryService _discovery = DiscoveryService();
   final MeshNetworkService _meshNetwork = MeshNetworkService();
   final RemoteDesktopHostService _rdHostService = RemoteDesktopHostService();
+  late final RemoteDesktopRelayService _rdRelayService =
+      RemoteDesktopRelayService(_rdHostService);
   final RemoteFileHostService _rdFileHostService = RemoteFileHostService();
-  
+
   bool _initialized = false;
   bool _running = false;
   String _deviceAlias = 'SCN Device';
@@ -32,10 +35,10 @@ class AppService extends ChangeNotifier {
   static const String _deviceAliasKey = 'device_alias';
   static const String _deviceVisibilityKey = 'device_visibility';
   static const String _deviceFingerprintKey = 'device_fingerprint';
-  
+
   RemotePeerProvider? _peerProvider;
   VoidCallback? _peerSettingsListener;
-  
+
   bool get initialized => _initialized;
   bool get running => _running;
   int get port => _httpServer.port;
@@ -43,7 +46,8 @@ class AppService extends ChangeNotifier {
       ? Uri.parse(_meshNetwork.embeddedLocalSignalingUrl!).port
       : null;
   String? get signalingUrl => _meshNetwork.embeddedLocalSignalingUrl;
-  String? get advertisedSignalingUrl => _meshNetwork.embeddedAdvertiseSignalingUrl;
+  String? get advertisedSignalingUrl =>
+      _meshNetwork.embeddedAdvertiseSignalingUrl;
   String get wanConnectionStage => _meshNetwork.connectionStage;
   String get wanConnectionDetails => _meshNetwork.connectionDetails;
   String get wanSignalingState => _meshNetwork.signalingState;
@@ -56,8 +60,9 @@ class AppService extends ChangeNotifier {
   DeviceVisibility get deviceVisibility => _deviceVisibility;
   MeshNetworkService? get meshService => _running ? _meshNetwork : null;
   RemoteDesktopHostService get remoteDesktopHostService => _rdHostService;
+  RemoteDesktopRelayService get remoteDesktopRelayService => _rdRelayService;
   RemoteFileHostService get remoteFileHostService => _rdFileHostService;
-  
+
   void setProviders({
     ReceiveProvider? receiveProvider,
     ChatProvider? chatProvider,
@@ -71,7 +76,7 @@ class AppService extends ChangeNotifier {
       rdFileHostService: _rdFileHostService,
     );
     _discovery.setProvider(deviceProvider ?? DeviceProvider());
-    
+
     if (peerProvider != null) {
       if (_peerProvider != null && _peerSettingsListener != null) {
         _peerProvider!.removeListener(_peerSettingsListener!);
@@ -82,16 +87,18 @@ class AppService extends ChangeNotifier {
       _peerSettingsListener = () {
         _meshNetwork.updateSettings(peerProvider.settings);
         _rdHostService.applySettings(peerProvider.settings.remoteDesktop);
+        _rdRelayService.applySettings(peerProvider.settings.remoteDesktop);
         _rdFileHostService.applySettings(peerProvider.settings.remoteDesktop);
       };
       peerProvider.addListener(_peerSettingsListener!);
       _rdHostService.applySettings(peerProvider.settings.remoteDesktop);
+      _rdRelayService.applySettings(peerProvider.settings.remoteDesktop);
       _rdFileHostService.applySettings(peerProvider.settings.remoteDesktop);
     }
-    
+
     _updateDeviceInfo();
   }
-  
+
   void _updateDeviceInfo() {
     _discovery.setDeviceInfo(
       alias: _deviceAlias,
@@ -114,8 +121,12 @@ class AppService extends ChangeNotifier {
       deviceId: _deviceFingerprint,
       alias: _deviceAlias,
     );
+    _rdRelayService.setIdentity(
+      deviceId: _deviceFingerprint,
+      alias: _deviceAlias,
+    );
   }
-  
+
   /// Load device alias and fingerprint from storage (with test instance prefix if in test mode)
   Future<void> loadDeviceAlias() async {
     try {
@@ -129,9 +140,10 @@ class AppService extends ChangeNotifier {
         await TestStorage.setString(_deviceAliasKey, _deviceAlias);
         debugPrint('Generated new device name: $_deviceAlias');
       }
-      
+
       // Load or generate fingerprint
-      final savedFingerprint = await TestStorage.getString(_deviceFingerprintKey);
+      final savedFingerprint =
+          await TestStorage.getString(_deviceFingerprintKey);
       if (savedFingerprint != null && savedFingerprint.isNotEmpty) {
         _deviceFingerprint = savedFingerprint;
       } else {
@@ -139,18 +151,19 @@ class AppService extends ChangeNotifier {
         await TestStorage.setString(_deviceFingerprintKey, _deviceFingerprint);
         debugPrint('Generated new device fingerprint: $_deviceFingerprint');
       }
-      
+
       // Load visibility
       final savedVisibility = await TestStorage.getInt(_deviceVisibilityKey);
-      if (savedVisibility != null && savedVisibility < DeviceVisibility.values.length) {
+      if (savedVisibility != null &&
+          savedVisibility < DeviceVisibility.values.length) {
         _deviceVisibility = DeviceVisibility.values[savedVisibility];
       }
-      
+
       // Add test instance suffix to alias display
       if (TestConfig.current.isTestMode) {
         _deviceAlias = '$_deviceAlias${TestConfig.current.instanceSuffix}';
       }
-      
+
       _updateDeviceInfo();
       notifyListeners();
     } catch (e) {
@@ -164,7 +177,7 @@ class AppService extends ChangeNotifier {
       notifyListeners();
     }
   }
-  
+
   String _generateFingerprint() {
     final timestamp = DateTime.now().microsecondsSinceEpoch;
     final random = timestamp.hashCode ^ _deviceAlias.hashCode;
@@ -172,53 +185,53 @@ class AppService extends ChangeNotifier {
     final hash = sha256.convert(bytes);
     return hash.toString().substring(0, 16);
   }
-  
+
   /// Set device alias and save to storage
   Future<void> setDeviceAlias(String alias) async {
     if (alias.trim().isEmpty) {
       return;
     }
-    
+
     // Remove test suffix if present before saving
     var cleanAlias = alias.trim();
     if (TestConfig.current.isTestMode) {
       cleanAlias = cleanAlias.replaceAll(TestConfig.current.instanceSuffix, '');
     }
-    
+
     _deviceAlias = cleanAlias;
-    
+
     try {
       await TestStorage.setString(_deviceAliasKey, cleanAlias);
     } catch (e) {
       debugPrint('Error saving device alias: $e');
     }
-    
+
     // Re-add suffix for display
     if (TestConfig.current.isTestMode) {
       _deviceAlias = '$cleanAlias${TestConfig.current.instanceSuffix}';
     }
-    
+
     _updateDeviceInfo();
     notifyListeners();
   }
-  
+
   /// Set device visibility and save to storage
   Future<void> setDeviceVisibility(DeviceVisibility visibility) async {
     _deviceVisibility = visibility;
-    
+
     try {
       await TestStorage.setInt(_deviceVisibilityKey, visibility.index);
     } catch (e) {
       debugPrint('Error saving device visibility: $e');
     }
-    
+
     _updateDeviceInfo();
     notifyListeners();
   }
-  
+
   Future<void> initialize({int? port}) async {
     if (_running) return;
-    
+
     try {
       // Stop services first if they were running before
       if (_initialized) {
@@ -230,32 +243,33 @@ class AppService extends ChangeNotifier {
           debugPrint('Error stopping services: $e');
         }
       }
-      
+
       // Load remote peers if provider is set
       await _peerProvider?.load();
-      
+
       // Start HTTP server (use provided port if in test mode)
       await _httpServer.start(port: port);
-      
+
       _initialized = true;
       _running = true;
-      
+
       // Update device info AFTER HTTP server started (so port is correct)
       _updateDeviceInfo();
-      
+
       // Start device discovery AFTER device info is updated
       await _discovery.start();
-      
+
       // Start mesh network service
       try {
         if (_peerProvider != null) {
           _meshNetwork.updateSettings(_peerProvider!.settings);
+          _rdRelayService.applySettings(_peerProvider!.settings.remoteDesktop);
         }
         await _meshNetwork.start();
       } catch (e) {
         AppLogger.log('Mesh network failed to start (non-fatal): $e');
       }
-      
+
       notifyListeners();
     } catch (e) {
       debugPrint('Failed to initialize app: $e');
@@ -265,17 +279,18 @@ class AppService extends ChangeNotifier {
       rethrow;
     }
   }
-  
+
   Future<void> stop() async {
     if (!_running) return;
-    
+
     try {
       await _rdHostService.shutdown();
+      await _rdRelayService.stop();
       await _rdFileHostService.shutdown();
       await _httpServer.stop();
       await _discovery.stop();
       await _meshNetwork.stop();
-      
+
       _running = false;
       _updateDeviceInfo();
       notifyListeners();
@@ -286,13 +301,14 @@ class AppService extends ChangeNotifier {
       notifyListeners();
     }
   }
-  
+
   @override
   void dispose() {
     if (_peerProvider != null && _peerSettingsListener != null) {
       _peerProvider!.removeListener(_peerSettingsListener!);
     }
     _rdHostService.dispose();
+    _rdRelayService.dispose();
     _rdFileHostService.dispose();
     stop();
     super.dispose();
