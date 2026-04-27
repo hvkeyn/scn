@@ -34,6 +34,8 @@ class _HostSession {
   RTCDataChannel? inputChannel;
   MediaStream? screenStream;
   WebSocketChannel? ws;
+  void Function(RemoteDesktopSignal signal)? relaySignalSender;
+  List<Map<String, dynamic>>? iceServers;
   StreamSubscription? wsSub;
   Timer? statsTimer;
   RemoteDesktopStats? lastStats;
@@ -71,6 +73,8 @@ class _HostSession {
     required this.authMode,
     required this.grantsControl,
     required this.grantsAudio,
+    this.relaySignalSender,
+    this.iceServers,
   });
 
   RemoteDesktopSession toModel() => RemoteDesktopSession(
@@ -284,6 +288,128 @@ class RemoteDesktopHostService extends ChangeNotifier {
     );
   }
 
+  Future<RemoteDesktopRequestResponse> handleRelayRequest({
+    required String relaySessionId,
+    required RemoteDesktopRequest request,
+    required String viewerAddress,
+    required void Function(RemoteDesktopSignal signal) sendSignal,
+    List<Map<String, dynamic>> iceServers = const [],
+  }) async {
+    if (!_settings.enabled ||
+        _settings.accessMode == RemoteDesktopAccessMode.disabled) {
+      return const RemoteDesktopRequestResponse(
+        status: RemoteDesktopRequestStatus.rejected,
+        errorMessage: 'Remote desktop is disabled on this device',
+      );
+    }
+
+    final stale = _sessions.values
+        .where((s) =>
+            s.viewerDeviceId == request.viewerDeviceId &&
+            s.status != RemoteDesktopSessionStatus.streaming)
+        .toList();
+    for (final s in stale) {
+      await _terminate(s, RemoteDesktopSessionStatus.closed);
+    }
+
+    if (hasActiveSession) {
+      return const RemoteDesktopRequestResponse(
+        status: RemoteDesktopRequestStatus.busy,
+        errorMessage: 'Host is already serving another session',
+      );
+    }
+
+    RemoteDesktopAuthMode? authMode;
+    final grantsControl = request.wantsControl && !_settings.viewOnlyByDefault;
+    final grantsAudio = request.wantsAudio && _settings.shareAudio;
+    final isTrusted = _settings.trustedPeerIds.contains(request.viewerDeviceId);
+    final passwordOk = request.password != null &&
+        _settings.password != null &&
+        request.password == _settings.password;
+
+    if (isTrusted) {
+      authMode = RemoteDesktopAuthMode.trusted;
+    } else if (passwordOk) {
+      authMode = RemoteDesktopAuthMode.password;
+    } else if (_settings.accessMode == RemoteDesktopAccessMode.passwordOnly) {
+      return const RemoteDesktopRequestResponse(
+        status: RemoteDesktopRequestStatus.rejected,
+        errorMessage: 'Invalid password',
+      );
+    }
+
+    final sessionToken = _generateId();
+    final session = _HostSession(
+      sessionId: relaySessionId,
+      sessionToken: sessionToken,
+      viewerDeviceId: request.viewerDeviceId,
+      viewerAlias: request.viewerAlias,
+      viewerAddress: viewerAddress,
+      authMode: authMode ?? RemoteDesktopAuthMode.prompt,
+      grantsControl: grantsControl,
+      grantsAudio: grantsAudio,
+      relaySignalSender: sendSignal,
+      iceServers: iceServers.isEmpty ? null : iceServers,
+    );
+    _sessions[relaySessionId] = session;
+    notifyListeners();
+
+    if (authMode == null) {
+      session.approvalCompleter = Completer<bool>();
+      _approvalController.add(RemoteDesktopPermissionRequest(
+        sessionId: relaySessionId,
+        viewerDeviceId: request.viewerDeviceId,
+        viewerAlias: request.viewerAlias,
+        viewerAddress: viewerAddress,
+        requestedMode: RemoteDesktopAuthMode.prompt,
+        wantsControl: request.wantsControl,
+        requestedAt: DateTime.now(),
+      ));
+
+      final approved = await session.approvalCompleter!.future
+          .timeout(const Duration(seconds: 30), onTimeout: () => false);
+      session.approvalCompleter = null;
+      if (!approved) {
+        await _terminate(session, RemoteDesktopSessionStatus.rejected,
+            error: 'Host did not approve');
+        return const RemoteDesktopRequestResponse(
+          status: RemoteDesktopRequestStatus.rejected,
+          errorMessage: 'Approval denied',
+        );
+      }
+    }
+
+    session.status = RemoteDesktopSessionStatus.negotiating;
+    notifyListeners();
+    return RemoteDesktopRequestResponse(
+      status: RemoteDesktopRequestStatus.accepted,
+      sessionId: relaySessionId,
+      sessionToken: sessionToken,
+      grantsControl: session.grantsControl,
+      grantsAudio: session.grantsAudio,
+    );
+  }
+
+  Future<void> startRelaySession(String relaySessionId) async {
+    final session = _sessions[relaySessionId];
+    if (session == null) return;
+    await _startHostMedia(session);
+  }
+
+  Future<void> handleRelaySignal(
+      String relaySessionId, RemoteDesktopSignal signal) async {
+    final session = _sessions[relaySessionId];
+    if (session == null) return;
+    await _handleHostSignal(session, signal);
+  }
+
+  Future<void> closeRelaySession(String relaySessionId,
+      {String? reason}) async {
+    final session = _sessions[relaySessionId];
+    if (session == null) return;
+    await _terminate(session, RemoteDesktopSessionStatus.closed, error: reason);
+  }
+
   /// REST endpoint POST /api/rd/end?sessionId=..&token=..
   Future<shelf.Response> handleEnd(shelf.Request request) async {
     final id = request.url.queryParameters['sessionId'];
@@ -369,19 +495,29 @@ class RemoteDesktopHostService extends ChangeNotifier {
     );
   }
 
+  void _sendSignalToViewer(_HostSession session, RemoteDesktopSignal signal) {
+    final relaySender = session.relaySignalSender;
+    if (relaySender != null) {
+      relaySender(signal);
+      return;
+    }
+    session.ws?.sink.add(jsonEncode(signal.toJson()));
+  }
+
   Future<void> _startHostMedia(_HostSession session) async {
     try {
       AppLogger.log('RD host: starting media for session ${session.sessionId} '
           '(audio=${session.grantsAudio}, fps=${_settings.defaultFps})');
 
-      final iceServers = <Map<String, dynamic>>[
-        {
-          'urls': [
-            'stun:stun.l.google.com:19302',
-            'stun:stun1.l.google.com:19302',
-          ],
-        },
-      ];
+      final iceServers = session.iceServers ??
+          <Map<String, dynamic>>[
+            {
+              'urls': [
+                'stun:stun.l.google.com:19302',
+                'stun:stun1.l.google.com:19302',
+              ],
+            },
+          ];
       final pc = await createPeerConnection({
         'iceServers': iceServers,
         'sdpSemantics': 'unified-plan',
@@ -425,14 +561,16 @@ class RemoteDesktopHostService extends ChangeNotifier {
       }
 
       pc.onIceCandidate = (RTCIceCandidate candidate) {
-        session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
-          type: RemoteDesktopSignalType.iceCandidate,
-          payload: {
-            'candidate': candidate.candidate,
-            'sdpMid': candidate.sdpMid,
-            'sdpMLineIndex': candidate.sdpMLineIndex,
-          },
-        ).toJson()));
+        _sendSignalToViewer(
+            session,
+            RemoteDesktopSignal(
+              type: RemoteDesktopSignalType.iceCandidate,
+              payload: {
+                'candidate': candidate.candidate,
+                'sdpMid': candidate.sdpMid,
+                'sdpMLineIndex': candidate.sdpMLineIndex,
+              },
+            ));
       };
 
       pc.onConnectionState = (state) {
@@ -510,14 +648,16 @@ class RemoteDesktopHostService extends ChangeNotifier {
       }
 
       AppLogger.log('RD host: sending hostReady to ${session.sessionId}');
-      session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
-        type: RemoteDesktopSignalType.hostReady,
-        payload: {
-          'audioEnabled': session.grantsAudio,
-          'controlAllowed': session.grantsControl,
-          'preferredCodec': _settings.preferredVideoCodec,
-        },
-      ).toJson()));
+      _sendSignalToViewer(
+          session,
+          RemoteDesktopSignal(
+            type: RemoteDesktopSignalType.hostReady,
+            payload: {
+              'audioEnabled': session.grantsAudio,
+              'controlAllowed': session.grantsControl,
+              'preferredCodec': _settings.preferredVideoCodec,
+            },
+          ));
 
       _startStatsTimer(session);
     } catch (e, st) {
@@ -620,10 +760,12 @@ class RemoteDesktopHostService extends ChangeNotifier {
     AppLogger.log('RD host: failing session ${session.sessionId}: $message'
         '${stackTrace != null ? '\n$stackTrace' : ''}');
     try {
-      session.ws?.sink.add(jsonEncode({
-        'type': RemoteDesktopSignalType.error.name,
-        'payload': {'message': fullMessage},
-      }));
+      _sendSignalToViewer(
+          session,
+          RemoteDesktopSignal(
+            type: RemoteDesktopSignalType.error,
+            payload: {'message': fullMessage},
+          ));
     } catch (_) {}
     await _terminate(session, RemoteDesktopSessionStatus.failed,
         error: fullMessage);
@@ -641,13 +783,15 @@ class RemoteDesktopHostService extends ChangeNotifier {
         ));
         final answer = await pc.createAnswer();
         await pc.setLocalDescription(answer);
-        session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
-          type: RemoteDesktopSignalType.answer,
-          payload: {
-            'sdp': answer.sdp,
-            'type': answer.type,
-          },
-        ).toJson()));
+        _sendSignalToViewer(
+            session,
+            RemoteDesktopSignal(
+              type: RemoteDesktopSignalType.answer,
+              payload: {
+                'sdp': answer.sdp,
+                'type': answer.type,
+              },
+            ));
         break;
       case RemoteDesktopSignalType.iceCandidate:
         final pc = session.pc;
@@ -662,9 +806,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
         await _terminate(session, RemoteDesktopSessionStatus.closed);
         break;
       case RemoteDesktopSignalType.ping:
-        session.ws?.sink.add(jsonEncode(
-            const RemoteDesktopSignal(type: RemoteDesktopSignalType.pong)
-                .toJson()));
+        _sendSignalToViewer(session,
+            const RemoteDesktopSignal(type: RemoteDesktopSignalType.pong));
         break;
       case RemoteDesktopSignalType.qualityChange:
         await _applyQualityChange(session, signal.payload);
@@ -710,8 +853,9 @@ class RemoteDesktopHostService extends ChangeNotifier {
         if (event.button != null) session.heldMouseButtons.add(event.button!);
         break;
       case RemoteInputEventKind.mouseUp:
-        if (event.button != null)
+        if (event.button != null) {
           session.heldMouseButtons.remove(event.button!);
+        }
         break;
       case RemoteInputEventKind.keyDown:
         if (event.keyCode != null) session.heldKeys.add(event.keyCode!);
@@ -837,19 +981,21 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
         // Сообщаем viewer'у статистику и текущий потолок.
         try {
-          session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
-            type: RemoteDesktopSignalType.stats,
-            payload: {
-              'videoKbps': videoKbps,
-              'audioKbps': audioKbps,
-              'fps': fps,
-              'rtt': rtt,
-              'lost': packetsLost,
-              'width': width,
-              'height': height,
-              'maxKbps': session.currentMaxBitrateKbps,
-            },
-          ).toJson()));
+          _sendSignalToViewer(
+              session,
+              RemoteDesktopSignal(
+                type: RemoteDesktopSignalType.stats,
+                payload: {
+                  'videoKbps': videoKbps,
+                  'audioKbps': audioKbps,
+                  'fps': fps,
+                  'rtt': rtt,
+                  'lost': packetsLost,
+                  'width': width,
+                  'height': height,
+                  'maxKbps': session.currentMaxBitrateKbps,
+                },
+              ));
         } catch (_) {}
 
         notifyListeners();
@@ -946,13 +1092,15 @@ class RemoteDesktopHostService extends ChangeNotifier {
     }
     _releaseAllHeldInput(session);
     try {
-      session.ws?.sink.add(jsonEncode(RemoteDesktopSignal(
-        type: RemoteDesktopSignalType.bye,
-        payload: {
-          'status': status.name,
-          if (error != null) 'reason': error,
-        },
-      ).toJson()));
+      _sendSignalToViewer(
+          session,
+          RemoteDesktopSignal(
+            type: RemoteDesktopSignalType.bye,
+            payload: {
+              'status': status.name,
+              if (error != null) 'reason': error,
+            },
+          ));
     } catch (_) {}
     try {
       await session.ws?.sink.close();
