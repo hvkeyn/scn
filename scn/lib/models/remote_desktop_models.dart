@@ -57,6 +57,7 @@ enum RemoteInputEventKind {
   keyDown,
   keyUp,
   textInput,
+  clipboardPaste,
 }
 
 /// Кнопка мыши.
