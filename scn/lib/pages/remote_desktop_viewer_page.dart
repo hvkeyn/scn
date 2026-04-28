@@ -354,6 +354,13 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
         pressed.contains(LogicalKeyboardKey.metaRight);
     final text = event.character;
     if (isDown &&
+        (ctrl || meta) &&
+        !alt &&
+        event.logicalKey == LogicalKeyboardKey.keyV) {
+      unawaited(_sendLocalClipboardPaste());
+      return KeyEventResult.handled;
+    }
+    if (isDown &&
         !ctrl &&
         !alt &&
         !meta &&
@@ -380,6 +387,21 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       timestampUs: DateTime.now().microsecondsSinceEpoch,
     ));
     return KeyEventResult.handled;
+  }
+
+  Future<void> _sendLocalClipboardPaste() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text;
+      if (!_controlActive || text == null || text.isEmpty) return;
+      _client.sendInputEvent(RemoteInputEvent(
+        kind: RemoteInputEventKind.clipboardPaste,
+        text: text,
+        timestampUs: DateTime.now().microsecondsSinceEpoch,
+      ));
+    } catch (e) {
+      AppLogger.log('RD viewer: clipboard paste read failed: $e');
+    }
   }
 
   bool _isControlCharacter(String value) {

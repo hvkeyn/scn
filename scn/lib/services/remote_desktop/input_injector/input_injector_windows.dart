@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:ffi';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/services.dart';
 import 'package:win32/win32.dart';
 
 import 'package:scn/models/remote_desktop_models.dart';
@@ -48,6 +50,9 @@ class WindowsInputInjector implements InputInjector {
         break;
       case RemoteInputEventKind.textInput:
         _sendText(event.text ?? '');
+        break;
+      case RemoteInputEventKind.clipboardPaste:
+        unawaited(_pasteClipboardText(event.text ?? ''));
         break;
     }
   }
@@ -199,6 +204,23 @@ class WindowsInputInjector implements InputInjector {
       _sendUnicodeChar(code, down: true);
       _sendUnicodeChar(code, down: false);
     }
+  }
+
+  Future<void> _pasteClipboardText(String text) async {
+    if (text.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: text));
+    // Ctrl may already be held because the viewer detected Ctrl+V after
+    // forwarding Ctrl-down. Reset modifiers before issuing a clean paste.
+    _sendVirtualKey(WinKeymap.VK_LCONTROL, down: false);
+    _sendVirtualKey(WinKeymap.VK_RCONTROL, down: false);
+    _sendVirtualKey(WinKeymap.VK_LMENU, down: false);
+    _sendVirtualKey(WinKeymap.VK_RMENU, down: false);
+    _sendVirtualKey(WinKeymap.VK_LWIN, down: false);
+    _sendVirtualKey(WinKeymap.VK_RWIN, down: false);
+    _sendVirtualKey(WinKeymap.VK_CONTROL, down: true);
+    _sendVirtualKey(0x56, down: true); // V
+    _sendVirtualKey(0x56, down: false);
+    _sendVirtualKey(WinKeymap.VK_CONTROL, down: false);
   }
 
   void _sendOneMouseEvent({

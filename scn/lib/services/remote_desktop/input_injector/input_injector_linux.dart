@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 
@@ -102,6 +104,16 @@ class LinuxInputInjector implements InputInjector {
         if (text == null || text.isEmpty) return;
         if (tool == 'xdotool') {
           await Process.run(tool, ['type', '--', text]);
+        } else {
+          await Process.run(tool, ['type', text]);
+        }
+        break;
+      case RemoteInputEventKind.clipboardPaste:
+        final text = event.text;
+        if (text == null || text.isEmpty) return;
+        await Clipboard.setData(ClipboardData(text: text));
+        if (tool == 'xdotool') {
+          await Process.run(tool, ['key', '--clearmodifiers', 'ctrl+v']);
         } else {
           await Process.run(tool, ['type', text]);
         }

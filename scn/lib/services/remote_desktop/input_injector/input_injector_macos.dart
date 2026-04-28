@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 
@@ -98,6 +100,13 @@ class MacOsInputInjector implements InputInjector {
                 'tell application "System Events" to keystroke "${_escape(event.text!)}"');
           }
         }
+        break;
+      case RemoteInputEventKind.clipboardPaste:
+        final text = event.text;
+        if (text == null || text.isEmpty) return;
+        await Clipboard.setData(ClipboardData(text: text));
+        await _osascript(
+            'tell application "System Events" to keystroke "v" using command down');
         break;
     }
   }
