@@ -28,33 +28,103 @@ SCN_DIR="$PROJECT_DIR/scn"
 FLUTTER_DIR="$PROJECT_DIR/flutter-sdk"
 RELEASES_DIR="$PROJECT_DIR/releases"
 FLUTTER_VERSION="3.24.5"
+SUDO_USER_NAME="${SUDO_USER:-}"
 
 echo ""
 echo -e "${YELLOW}======================================${NC}"
 echo -e "${YELLOW}       SCN Build Script${NC}"
 echo -e "${YELLOW}======================================${NC}"
 
+run_without_root_if_needed() {
+    if [ "$(id -u)" -ne 0 ]; then
+        return 0
+    fi
+
+    if [ -n "$SUDO_USER_NAME" ] && [ "$SUDO_USER_NAME" != "root" ] && command -v sudo &>/dev/null; then
+        echo -e "   ${YELLOW}[WARN]${NC} Build was started as root; restarting as $SUDO_USER_NAME for Flutter."
+        local group
+        group="$(id -gn "$SUDO_USER_NAME" 2>/dev/null || echo "$SUDO_USER_NAME")"
+        chown -R "$SUDO_USER_NAME:$group" "$PROJECT_DIR" 2>/dev/null || true
+        exec sudo -H -u "$SUDO_USER_NAME" bash "$0" "$@"
+    fi
+
+    echo -e "   ${RED}[FAIL]${NC} Do not run Flutter build as root."
+    echo -e "   ${GRAY}Run: ./build.sh --linux${NC}"
+    exit 1
+}
+
+run_with_sudo() {
+    if [ "$(id -u)" -eq 0 ]; then
+        "$@"
+    elif command -v sudo &>/dev/null; then
+        sudo "$@"
+    else
+        echo -e "   ${RED}[FAIL]${NC} sudo is required to install build dependencies." >&2
+        return 1
+    fi
+}
+
+require_command() {
+    local cmd="$1"
+    if ! command -v "$cmd" &>/dev/null; then
+        echo -e "   ${RED}[FAIL]${NC} Required command not found: $cmd" >&2
+        return 1
+    fi
+}
+
 # Install dependencies
 install_deps() {
     echo -e "\n${CYAN}>> Installing build dependencies...${NC}"
+
+    local need_install=0
+    for cmd in curl git unzip tar clang cmake ninja pkg-config; do
+        if ! command -v "$cmd" &>/dev/null; then
+            need_install=1
+        fi
+    done
+    if command -v pkg-config &>/dev/null && ! pkg-config --exists gtk+-3.0; then
+        need_install=1
+    fi
+
+    if [ "$need_install" = "0" ]; then
+        echo -e "   ${GREEN}[OK]${NC} Dependencies already installed"
+        return 0
+    fi
     
     if command -v apt-get &>/dev/null; then
-        sudo apt-get update -qq
-        sudo apt-get install -y -qq \
+        run_with_sudo apt-get update -qq
+        run_with_sudo apt-get install -y -qq \
             curl git unzip xz-utils zip \
             clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev libstdc++-12-dev \
-            2>/dev/null || true
+            libgtk-3-dev liblzma-dev
+        run_with_sudo apt-get install -y -qq libstdc++-12-dev || true
     elif command -v pacman &>/dev/null; then
-        sudo pacman -Sy --noconfirm \
+        run_with_sudo pacman -Sy --noconfirm \
             curl git unzip zip \
-            clang cmake ninja pkgconf gtk3 \
-            2>/dev/null || true
+            clang cmake ninja pkgconf gtk3
     elif command -v dnf &>/dev/null; then
-        sudo dnf install -y \
+        run_with_sudo dnf install -y \
             curl git unzip zip \
-            clang cmake ninja-build pkgconfig gtk3-devel \
-            2>/dev/null || true
+            clang cmake ninja-build pkgconfig gtk3-devel
+    elif command -v zypper &>/dev/null; then
+        run_with_sudo zypper --non-interactive install \
+            curl git unzip zip xz \
+            clang cmake ninja pkg-config gtk3-devel
+    else
+        echo -e "   ${YELLOW}[WARN]${NC} Unknown package manager. Install manually: curl git unzip tar xz clang cmake ninja pkg-config GTK 3 dev libraries"
+    fi
+
+    require_command curl
+    require_command git
+    require_command unzip
+    require_command tar
+    require_command clang
+    require_command cmake
+    require_command ninja
+    require_command pkg-config
+    if ! pkg-config --exists gtk+-3.0; then
+        echo -e "   ${RED}[FAIL]${NC} GTK 3 development files were not found (pkg-config gtk+-3.0)." >&2
+        return 1
     fi
     
     echo -e "   ${GREEN}[OK]${NC} Dependencies installed"
@@ -241,10 +311,14 @@ for arg in "$@"; do
     esac
 done
 
+run_without_root_if_needed "$@"
+
 # Default: Linux only
 if [ "$BUILD_LINUX" = "0" ] && [ "$BUILD_WINDOWS" = "0" ]; then
     BUILD_LINUX=1
 fi
+
+install_deps
 
 # Get Flutter. The helper prints progress messages, so keep only its final
 # line as the executable path while still showing progress in the terminal.
