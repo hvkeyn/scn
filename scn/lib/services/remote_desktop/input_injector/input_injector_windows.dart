@@ -209,6 +209,7 @@ class WindowsInputInjector implements InputInjector {
   Future<void> _pasteClipboardText(String text) async {
     if (text.isEmpty) return;
     await Clipboard.setData(ClipboardData(text: text));
+    await Future<void>.delayed(const Duration(milliseconds: 80));
     // Ctrl may already be held because the viewer detected Ctrl+V after
     // forwarding Ctrl-down. Reset modifiers before issuing a clean paste.
     _sendVirtualKey(WinKeymap.VK_LCONTROL, down: false);

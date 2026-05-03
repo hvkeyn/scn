@@ -105,6 +105,7 @@ class MacOsInputInjector implements InputInjector {
         final text = event.text;
         if (text == null || text.isEmpty) return;
         await Clipboard.setData(ClipboardData(text: text));
+        await Future<void>.delayed(const Duration(milliseconds: 80));
         await _osascript(
             'tell application "System Events" to keystroke "v" using command down');
         break;
@@ -113,6 +114,28 @@ class MacOsInputInjector implements InputInjector {
 
   Future<void> _sendKey(RemoteInputEvent event,
       {required bool down, required bool cliclick}) async {
+    if (event.ctrl || event.meta || event.alt) {
+      final key = _keyNameFor(event);
+      if (key == null) return;
+      final modifiers = <String>[
+        if (event.ctrl) 'control',
+        if (event.meta) 'command',
+        if (event.alt) 'option',
+        if (event.shift) 'shift',
+      ];
+      if (cliclick && modifiers.isEmpty) {
+        await Process.run('cliclick', ['kp:$key']);
+        return;
+      }
+      if (down) {
+        final using = modifiers.isEmpty
+            ? ''
+            : ' using {${modifiers.map((m) => '$m down').join(', ')}}';
+        await _osascript(
+            'tell application "System Events" to keystroke "$key"$using');
+      }
+      return;
+    }
     final ch = event.text;
     if (ch != null && ch.isNotEmpty && down) {
       if (cliclick) {
@@ -122,6 +145,30 @@ class MacOsInputInjector implements InputInjector {
             'tell application "System Events" to keystroke "${_escape(ch)}"');
       }
     }
+  }
+
+  String? _keyNameFor(RemoteInputEvent event) {
+    final code = event.keyCode;
+    if (code == null) return null;
+    if (code >= 0x61 && code <= 0x7a) {
+      return String.fromCharCode(code);
+    }
+    if (code >= 0x30 && code <= 0x39) {
+      return String.fromCharCode(code);
+    }
+    switch (code) {
+      case 4294967305:
+        return '\b';
+      case 4294967306:
+        return '\t';
+      case 4294967309:
+        return '\n';
+      case 4294967323:
+        return '\u001b';
+      case 4294967332:
+        return ' ';
+    }
+    return null;
   }
 
   String _buttonPrefix(RemoteMouseButton? btn, {required bool down}) {

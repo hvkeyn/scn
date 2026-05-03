@@ -357,7 +357,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
         (ctrl || meta) &&
         !alt &&
         event.logicalKey == LogicalKeyboardKey.keyV) {
-      unawaited(_sendLocalClipboardPaste());
+      unawaited(_sendLocalClipboardPasteOrForward(event,
+          ctrl: ctrl, meta: meta, shift: pressed.contains(LogicalKeyboardKey.shiftLeft) ||
+              pressed.contains(LogicalKeyboardKey.shiftRight)));
       return KeyEventResult.handled;
     }
     if (isDown &&
@@ -389,11 +391,25 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     return KeyEventResult.handled;
   }
 
-  Future<void> _sendLocalClipboardPaste() async {
+  Future<void> _sendLocalClipboardPasteOrForward(KeyEvent event,
+      {required bool ctrl, required bool meta, required bool shift}) async {
     try {
       final data = await Clipboard.getData(Clipboard.kTextPlain);
       final text = data?.text;
-      if (!_controlActive || text == null || text.isEmpty) return;
+      if (!_controlActive) return;
+      if (text == null || text.isEmpty) {
+        _client.sendInputEvent(RemoteInputEvent(
+          kind: RemoteInputEventKind.keyDown,
+          keyCode: event.logicalKey.keyId,
+          physicalKeyCode: event.physicalKey.usbHidUsage,
+          text: event.character,
+          ctrl: ctrl,
+          meta: meta,
+          shift: shift,
+          timestampUs: DateTime.now().microsecondsSinceEpoch,
+        ));
+        return;
+      }
       _client.sendInputEvent(RemoteInputEvent(
         kind: RemoteInputEventKind.clipboardPaste,
         text: text,
@@ -401,6 +417,16 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       ));
     } catch (e) {
       AppLogger.log('RD viewer: clipboard paste read failed: $e');
+      _client.sendInputEvent(RemoteInputEvent(
+        kind: RemoteInputEventKind.keyDown,
+        keyCode: event.logicalKey.keyId,
+        physicalKeyCode: event.physicalKey.usbHidUsage,
+        text: event.character,
+        ctrl: ctrl,
+        meta: meta,
+        shift: shift,
+        timestampUs: DateTime.now().microsecondsSinceEpoch,
+      ));
     }
   }
 

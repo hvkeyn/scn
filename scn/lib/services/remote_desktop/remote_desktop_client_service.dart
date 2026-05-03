@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:http/http.dart' as http;
 import 'package:web_socket_channel/web_socket_channel.dart';
@@ -540,6 +541,7 @@ class RemoteDesktopClientService extends ChangeNotifier {
     channel.onDataChannelState = (state) {
       AppLogger.log('RD client: input channel state=$state');
     };
+    channel.onMessage = _onInputChannelMessage;
     AppLogger.log(
         'RD client: created input DataChannel state=${channel.state}');
 
@@ -552,6 +554,22 @@ class RemoteDesktopClientService extends ChangeNotifier {
         'type': offer.type,
       },
     ));
+  }
+
+  void _onInputChannelMessage(RTCDataChannelMessage message) {
+    if (message.isBinary) return;
+    try {
+      final raw = jsonDecode(message.text);
+      if (raw is! Map<String, dynamic>) return;
+      if (raw['type'] != 'clipboardUpdate') return;
+      final text = raw['text'] as String?;
+      if (text == null) return;
+      unawaited(Clipboard.setData(ClipboardData(text: text)));
+      AppLogger.log(
+          'RD client: received remote clipboard update (${text.length} chars)');
+    } catch (e) {
+      AppLogger.log('RD client: input channel message parse failed: $e');
+    }
   }
 
   /// Послать input event на хост (no-op если канал не открыт или нет прав).

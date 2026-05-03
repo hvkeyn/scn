@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 import 'package:shelf/shelf.dart' as shelf;
 import 'package:shelf_web_socket/shelf_web_socket.dart';
@@ -63,6 +64,8 @@ class _HostSession {
 
   /// Логические клавиши, которые сейчас удерживаются viewer'ом.
   final Set<int> heldKeys = <int>{};
+
+  String? lastClipboardText;
 
   _HostSession({
     required this.sessionId,
@@ -839,9 +842,45 @@ class RemoteDesktopHostService extends ChangeNotifier {
       }
       _trackHeldInput(session, event);
       _inputInjector.inject(event);
+      _maybeSendClipboardUpdate(session, event);
     } catch (e, st) {
       AppLogger.log('RD input parse/inject error: $e\n$st');
     }
+  }
+
+  void _maybeSendClipboardUpdate(_HostSession session, RemoteInputEvent event) {
+    if (event.kind != RemoteInputEventKind.keyDown) return;
+    if (!event.ctrl && !event.meta) return;
+    final keyCode = event.keyCode;
+    final physicalKeyCode = event.physicalKeyCode;
+    final isCopyOrCut = keyCode == 0x63 ||
+        keyCode == 0x78 ||
+        physicalKeyCode == 0x70006 ||
+        physicalKeyCode == 0x7001b;
+    if (!isCopyOrCut) return;
+
+    unawaited(Future<void>.delayed(const Duration(milliseconds: 250), () async {
+      try {
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        final text = data?.text;
+        if (text == null || text == session.lastClipboardText) return;
+        session.lastClipboardText = text;
+        final channel = session.inputChannel;
+        if (channel == null ||
+            channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+          return;
+        }
+        channel.send(RTCDataChannelMessage(jsonEncode({
+          'type': 'clipboardUpdate',
+          'text': text,
+          'ts': DateTime.now().microsecondsSinceEpoch,
+        })));
+        AppLogger.log(
+            'RD host: sent clipboard update to viewer (${text.length} chars)');
+      } catch (e) {
+        AppLogger.log('RD host: clipboard sync failed: $e');
+      }
+    }));
   }
 
   /// Запоминает удерживаемые мышью кнопки и нажатые клавиши, чтобы при
