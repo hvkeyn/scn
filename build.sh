@@ -144,7 +144,7 @@ install_deps() {
     echo -e "\n${CYAN}>> Installing build dependencies...${NC}"
 
     local need_install=0
-    for cmd in curl git unzip tar xz clang cmake ninja pkg-config; do
+    for cmd in curl git unzip tar xz clang cmake ninja pkg-config xdotool; do
         if ! command -v "$cmd" &>/dev/null; then
             need_install=1
         fi
@@ -178,6 +178,8 @@ install_deps() {
         apt_install_any clang clang
         apt_install_any cmake cmake
         apt_install_any ninja ninja-build ninja
+        apt_install_any xdotool xdotool
+        apt_install_optional_any ydotool ydotool
         apt_install_any pkg-config pkgconfig pkg-config
         apt_install_any "GTK 3 development files" libgtk+3-devel gtk3-devel libgtk-3-dev
         apt_install_any "PCRE2 development files" libpcre2-devel pcre2-devel libpcre2-dev
@@ -192,17 +194,18 @@ install_deps() {
     elif command -v pacman &>/dev/null; then
         run_with_sudo pacman -Sy --noconfirm \
             curl git unzip zip xz \
-            clang cmake ninja pkgconf gtk3 pcre2 libffi libayatana-appindicator
+            clang cmake ninja pkgconf gtk3 pcre2 libffi libayatana-appindicator \
+            xdotool ydotool
     elif command -v dnf &>/dev/null; then
         run_with_sudo dnf install -y \
             curl git unzip zip xz \
             clang cmake ninja-build pkgconfig gtk3-devel pcre2-devel libffi-devel \
-            libayatana-appindicator-gtk3-devel
+            libayatana-appindicator-gtk3-devel xdotool ydotool
     elif command -v zypper &>/dev/null; then
         run_with_sudo zypper --non-interactive install \
             curl git unzip zip xz \
             clang cmake ninja pkg-config gtk3-devel pcre2-devel libffi-devel \
-            libayatana-appindicator3-devel
+            libayatana-appindicator3-devel xdotool ydotool
     else
         echo -e "   ${YELLOW}[WARN]${NC} Unknown package manager. Install manually: curl git unzip tar xz clang cmake ninja pkg-config GTK 3 dev libraries"
     fi
@@ -216,6 +219,7 @@ install_deps() {
     require_command cmake
     require_command ninja
     require_command pkg-config
+    require_command xdotool
     if ! pkg-config --exists gtk+-3.0; then
         echo -e "   ${RED}[FAIL]${NC} GTK 3 development files were not found (pkg-config gtk+-3.0)." >&2
         return 1
