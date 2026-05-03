@@ -155,6 +155,9 @@ install_deps() {
     if command -v pkg-config &>/dev/null && ! pkg-config --exists libpcre2-8; then
         need_install=1
     fi
+    if command -v pkg-config &>/dev/null && ! pkg-config --exists libffi; then
+        need_install=1
+    fi
     if command -v pkg-config &>/dev/null &&
         ! pkg_config_exists_any ayatana-appindicator3-0.1 appindicator3-0.1; then
         need_install=1
@@ -171,33 +174,34 @@ install_deps() {
         apt_install_any git git
         apt_install_any unzip unzip
         apt_install_any zip zip
-        apt_install_any xz xz-utils xz
+        apt_install_any xz xz xz-utils
         apt_install_any clang clang
         apt_install_any cmake cmake
         apt_install_any ninja ninja-build ninja
-        apt_install_any pkg-config pkg-config pkgconfig
-        apt_install_any "GTK 3 development files" libgtk-3-dev libgtk+3-devel gtk3-devel
-        apt_install_any "PCRE2 development files" libpcre2-dev libpcre2-devel pcre2-devel
+        apt_install_any pkg-config pkgconfig pkg-config
+        apt_install_any "GTK 3 development files" libgtk+3-devel gtk3-devel libgtk-3-dev
+        apt_install_any "PCRE2 development files" libpcre2-devel pcre2-devel libpcre2-dev
+        apt_install_any "libffi development files" libffi-devel libffi-dev
         apt_install_any "AppIndicator development files" \
-            libayatana-appindicator3-dev libayatana-appindicator3-devel \
+            libayatana-appindicator3-devel libayatana-appindicator3-dev \
             libayatana-appindicator-gtk3-devel ayatana-appindicator3-devel \
-            libappindicator3-dev libappindicator3-devel \
+            libappindicator3-devel libappindicator3-dev \
             libappindicator-gtk3-devel appindicator3-devel libappindicator-devel
-        apt_install_optional_any "liblzma development files" liblzma-dev liblzma-devel
-        apt_install_optional_any "libstdc++ development files" libstdc++-12-dev libstdc++-devel
+        apt_install_optional_any "liblzma development files" liblzma-devel liblzma-dev
+        apt_install_optional_any "libstdc++ development files" libstdc++-devel libstdc++-12-dev
     elif command -v pacman &>/dev/null; then
         run_with_sudo pacman -Sy --noconfirm \
             curl git unzip zip xz \
-            clang cmake ninja pkgconf gtk3 pcre2 libayatana-appindicator
+            clang cmake ninja pkgconf gtk3 pcre2 libffi libayatana-appindicator
     elif command -v dnf &>/dev/null; then
         run_with_sudo dnf install -y \
             curl git unzip zip xz \
-            clang cmake ninja-build pkgconfig gtk3-devel pcre2-devel \
+            clang cmake ninja-build pkgconfig gtk3-devel pcre2-devel libffi-devel \
             libayatana-appindicator-gtk3-devel
     elif command -v zypper &>/dev/null; then
         run_with_sudo zypper --non-interactive install \
             curl git unzip zip xz \
-            clang cmake ninja pkg-config gtk3-devel pcre2-devel \
+            clang cmake ninja pkg-config gtk3-devel pcre2-devel libffi-devel \
             libayatana-appindicator3-devel
     else
         echo -e "   ${YELLOW}[WARN]${NC} Unknown package manager. Install manually: curl git unzip tar xz clang cmake ninja pkg-config GTK 3 dev libraries"
@@ -218,6 +222,10 @@ install_deps() {
     fi
     if ! pkg-config --exists libpcre2-8; then
         echo -e "   ${RED}[FAIL]${NC} PCRE2 development files were not found (pkg-config libpcre2-8)." >&2
+        return 1
+    fi
+    if ! pkg-config --exists libffi; then
+        echo -e "   ${RED}[FAIL]${NC} libffi development files were not found (pkg-config libffi)." >&2
         return 1
     fi
     if ! pkg_config_exists_any ayatana-appindicator3-0.1 appindicator3-0.1; then
