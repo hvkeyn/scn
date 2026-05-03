@@ -38,11 +38,21 @@ $FlutterDir = Join-Path $ProjectDir "flutter-sdk"
 $ReleasesDir = Join-Path $ProjectDir "releases"
 $FlutterVersion = "3.24.5"
 $FlutterZipUrl = "https://storage.googleapis.com/flutter_infra_release/releases/stable/windows/flutter_windows_$FlutterVersion-stable.zip"
+$env:FLUTTER_SUPPRESS_ANALYTICS = "true"
+$env:DART_SUPPRESS_ANALYTICS = "true"
 
 Write-Host ""
 Write-Host "======================================" -ForegroundColor Yellow
 Write-Host "       SCN Build Script" -ForegroundColor Yellow  
 Write-Host "======================================" -ForegroundColor Yellow
+
+function Configure-Flutter {
+    param([string]$Flutter)
+
+    & $Flutter --disable-analytics 2>$null | Out-Null
+    & $Flutter config --no-analytics 2>$null | Out-Null
+    & $Flutter config --no-cli-animations 2>$null | Out-Null
+}
 
 # Kill processes
 function Clear-Processes {
@@ -180,6 +190,7 @@ function Get-Flutter {
         
         $localFlutter = Join-Path $FlutterDir "bin\flutter.bat"
         if (Test-Path $localFlutter) {
+            Configure-Flutter -Flutter $localFlutter
             Write-Host "   Precaching Flutter..." -ForegroundColor Gray
             & $localFlutter precache --windows 2>&1 | Out-Null
             
@@ -394,6 +405,8 @@ if (-not $Flutter) {
     Write-Host "  Please install manually: https://docs.flutter.dev/get-started/install" -ForegroundColor Gray
     exit 1
 }
+
+Configure-Flutter -Flutter $Flutter
 
 Update-Version
 

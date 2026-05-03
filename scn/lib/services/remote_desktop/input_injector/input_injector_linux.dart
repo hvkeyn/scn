@@ -127,6 +127,7 @@ class LinuxInputInjector implements InputInjector {
         final text = event.text;
         if (text == null || text.isEmpty) return;
         await Clipboard.setData(ClipboardData(text: text));
+        await Future<void>.delayed(const Duration(milliseconds: 80));
         if (tool == 'xdotool') {
           await _runTool(tool, ['key', '--clearmodifiers', 'ctrl+v']);
         } else {
@@ -188,10 +189,24 @@ class LinuxInputInjector implements InputInjector {
   /// Маппинг популярных Flutter logical keys в X11 keysym имена.
   String? _keysymFor(RemoteInputEvent event) {
     final txt = event.text;
-    if (txt != null && txt.isNotEmpty) {
+    if (!event.ctrl &&
+        !event.alt &&
+        !event.meta &&
+        txt != null &&
+        txt.isNotEmpty &&
+        !_isControlCharacter(txt)) {
       // Просто символ в keysym имя через "U+XXXX".
       final code = txt.codeUnitAt(0);
       return 'U${code.toRadixString(16).toUpperCase().padLeft(4, '0')}';
+    }
+    final code = event.keyCode;
+    if (code != null) {
+      if (code >= 0x61 && code <= 0x7a) {
+        return String.fromCharCode(code);
+      }
+      if (code >= 0x30 && code <= 0x39) {
+        return String.fromCharCode(code);
+      }
     }
     switch (event.keyCode) {
       case 4294967305:
@@ -236,6 +251,12 @@ class LinuxInputInjector implements InputInjector {
         return 'Super_L';
     }
     return null;
+  }
+
+  bool _isControlCharacter(String value) {
+    if (value.runes.length != 1) return false;
+    final code = value.runes.first;
+    return code < 0x20 || code == 0x7f;
   }
 
   @override
