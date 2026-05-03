@@ -45,12 +45,39 @@ run_without_root_if_needed() {
         local group
         group="$(id -gn "$SUDO_USER_NAME" 2>/dev/null || echo "$SUDO_USER_NAME")"
         chown -R "$SUDO_USER_NAME:$group" "$PROJECT_DIR" 2>/dev/null || true
-        exec sudo -H -u "$SUDO_USER_NAME" bash "$0" "$@"
+        exec env -u TMPDIR -u TMP -u TEMP \
+            sudo -H -u "$SUDO_USER_NAME" \
+            env TMPDIR=/tmp TMP=/tmp TEMP=/tmp bash "$0" "$@"
     fi
 
     echo -e "   ${RED}[FAIL]${NC} Do not run Flutter build as root."
     echo -e "   ${GRAY}Run: ./build.sh --linux${NC}"
     exit 1
+}
+
+prepare_user_environment() {
+    local tmp="${TMPDIR:-}"
+    if [ -z "$tmp" ] || [ ! -d "$tmp" ] || [ ! -w "$tmp" ] || [ "$tmp" = "/tmp/.private/root" ]; then
+        local private_tmp="/tmp/.private/$(id -un 2>/dev/null || echo user)"
+        if [ -d "$private_tmp" ] && [ -w "$private_tmp" ]; then
+            tmp="$private_tmp"
+        else
+            tmp="/tmp"
+        fi
+    fi
+
+    export TMPDIR="$tmp"
+    export TMP="$tmp"
+    export TEMP="$tmp"
+    export FLUTTER_SUPPRESS_ANALYTICS=true
+    export DART_SUPPRESS_ANALYTICS=true
+}
+
+configure_flutter() {
+    local FL="$1"
+    "$FL" --disable-analytics >/dev/null 2>&1 || true
+    "$FL" config --no-analytics >/dev/null 2>&1 || true
+    "$FL" config --no-cli-animations >/dev/null 2>&1 || true
 }
 
 run_with_sudo() {
@@ -210,6 +237,7 @@ get_flutter() {
     rm -f "$FLUTTER_TAR"
     
     # Enable Linux desktop
+    configure_flutter "$FLUTTER_DIR/bin/flutter"
     "$FLUTTER_DIR/bin/flutter" config --enable-linux-desktop 2>/dev/null || true
     "$FLUTTER_DIR/bin/flutter" precache --linux 2>/dev/null || true
     
@@ -350,6 +378,7 @@ for arg in "$@"; do
 done
 
 run_without_root_if_needed "$@"
+prepare_user_environment
 
 # Default: Linux only
 if [ "$BUILD_LINUX" = "0" ] && [ "$BUILD_WINDOWS" = "0" ]; then
@@ -367,6 +396,7 @@ if [ -z "$FLUTTER" ]; then
     echo -e "  ${GRAY}Please install manually: https://docs.flutter.dev/get-started/install${NC}"
     exit 1
 fi
+configure_flutter "$FLUTTER"
 
 update_version
 
