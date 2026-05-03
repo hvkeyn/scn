@@ -45,12 +45,39 @@ run_without_root_if_needed() {
         local group
         group="$(id -gn "$SUDO_USER_NAME" 2>/dev/null || echo "$SUDO_USER_NAME")"
         chown -R "$SUDO_USER_NAME:$group" "$PROJECT_DIR" 2>/dev/null || true
-        exec sudo -H -u "$SUDO_USER_NAME" bash "$0" "$@"
+        exec env -u TMPDIR -u TMP -u TEMP \
+            sudo -H -u "$SUDO_USER_NAME" \
+            env TMPDIR=/tmp TMP=/tmp TEMP=/tmp bash "$0" "$@"
     fi
 
     echo -e "   ${RED}[FAIL]${NC} Do not run Flutter build as root."
     echo -e "   ${GRAY}Run: ./build.sh --linux${NC}"
     exit 1
+}
+
+prepare_user_environment() {
+    local tmp="${TMPDIR:-}"
+    if [ -z "$tmp" ] || [ ! -d "$tmp" ] || [ ! -w "$tmp" ] || [ "$tmp" = "/tmp/.private/root" ]; then
+        local private_tmp="/tmp/.private/$(id -un 2>/dev/null || echo user)"
+        if [ -d "$private_tmp" ] && [ -w "$private_tmp" ]; then
+            tmp="$private_tmp"
+        else
+            tmp="/tmp"
+        fi
+    fi
+
+    export TMPDIR="$tmp"
+    export TMP="$tmp"
+    export TEMP="$tmp"
+    export FLUTTER_SUPPRESS_ANALYTICS=true
+    export DART_SUPPRESS_ANALYTICS=true
+}
+
+configure_flutter() {
+    local FL="$1"
+    "$FL" --disable-analytics >/dev/null 2>&1 || true
+    "$FL" config --no-analytics >/dev/null 2>&1 || true
+    "$FL" config --no-cli-animations >/dev/null 2>&1 || true
 }
 
 run_with_sudo() {
@@ -70,6 +97,16 @@ require_command() {
         echo -e "   ${RED}[FAIL]${NC} Required command not found: $cmd" >&2
         return 1
     fi
+}
+
+pkg_config_exists_any() {
+    local module
+    for module in "$@"; do
+        if pkg-config --exists "$module"; then
+            return 0
+        fi
+    done
+    return 1
 }
 
 apt_install_any() {
@@ -115,6 +152,13 @@ install_deps() {
     if command -v pkg-config &>/dev/null && ! pkg-config --exists gtk+-3.0; then
         need_install=1
     fi
+    if command -v pkg-config &>/dev/null && ! pkg-config --exists libpcre2-8; then
+        need_install=1
+    fi
+    if command -v pkg-config &>/dev/null &&
+        ! pkg_config_exists_any ayatana-appindicator3-0.1 appindicator3-0.1; then
+        need_install=1
+    fi
 
     if [ "$need_install" = "0" ]; then
         echo -e "   ${GREEN}[OK]${NC} Dependencies already installed"
@@ -133,20 +177,28 @@ install_deps() {
         apt_install_any ninja ninja-build ninja
         apt_install_any pkg-config pkg-config pkgconfig
         apt_install_any "GTK 3 development files" libgtk-3-dev libgtk+3-devel gtk3-devel
+        apt_install_any "PCRE2 development files" libpcre2-dev libpcre2-devel pcre2-devel
+        apt_install_any "AppIndicator development files" \
+            libayatana-appindicator3-dev libayatana-appindicator3-devel \
+            libayatana-appindicator-gtk3-devel ayatana-appindicator3-devel \
+            libappindicator3-dev libappindicator3-devel \
+            libappindicator-gtk3-devel appindicator3-devel libappindicator-devel
         apt_install_optional_any "liblzma development files" liblzma-dev liblzma-devel
         apt_install_optional_any "libstdc++ development files" libstdc++-12-dev libstdc++-devel
     elif command -v pacman &>/dev/null; then
         run_with_sudo pacman -Sy --noconfirm \
             curl git unzip zip xz \
-            clang cmake ninja pkgconf gtk3
+            clang cmake ninja pkgconf gtk3 pcre2 libayatana-appindicator
     elif command -v dnf &>/dev/null; then
         run_with_sudo dnf install -y \
             curl git unzip zip xz \
-            clang cmake ninja-build pkgconfig gtk3-devel
+            clang cmake ninja-build pkgconfig gtk3-devel pcre2-devel \
+            libayatana-appindicator-gtk3-devel
     elif command -v zypper &>/dev/null; then
         run_with_sudo zypper --non-interactive install \
             curl git unzip zip xz \
-            clang cmake ninja pkg-config gtk3-devel
+            clang cmake ninja pkg-config gtk3-devel pcre2-devel \
+            libayatana-appindicator3-devel
     else
         echo -e "   ${YELLOW}[WARN]${NC} Unknown package manager. Install manually: curl git unzip tar xz clang cmake ninja pkg-config GTK 3 dev libraries"
     fi
@@ -162,6 +214,15 @@ install_deps() {
     require_command pkg-config
     if ! pkg-config --exists gtk+-3.0; then
         echo -e "   ${RED}[FAIL]${NC} GTK 3 development files were not found (pkg-config gtk+-3.0)." >&2
+        return 1
+    fi
+    if ! pkg-config --exists libpcre2-8; then
+        echo -e "   ${RED}[FAIL]${NC} PCRE2 development files were not found (pkg-config libpcre2-8)." >&2
+        return 1
+    fi
+    if ! pkg_config_exists_any ayatana-appindicator3-0.1 appindicator3-0.1; then
+        echo -e "   ${RED}[FAIL]${NC} AppIndicator development files were not found." >&2
+        echo -e "   ${GRAY}Need pkg-config module: ayatana-appindicator3-0.1 or appindicator3-0.1${NC}" >&2
         return 1
     fi
     
@@ -210,6 +271,7 @@ get_flutter() {
     rm -f "$FLUTTER_TAR"
     
     # Enable Linux desktop
+    configure_flutter "$FLUTTER_DIR/bin/flutter"
     "$FLUTTER_DIR/bin/flutter" config --enable-linux-desktop 2>/dev/null || true
     "$FLUTTER_DIR/bin/flutter" precache --linux 2>/dev/null || true
     
@@ -350,6 +412,7 @@ for arg in "$@"; do
 done
 
 run_without_root_if_needed "$@"
+prepare_user_environment
 
 # Default: Linux only
 if [ "$BUILD_LINUX" = "0" ] && [ "$BUILD_WINDOWS" = "0" ]; then
@@ -367,6 +430,7 @@ if [ -z "$FLUTTER" ]; then
     echo -e "  ${GRAY}Please install manually: https://docs.flutter.dev/get-started/install${NC}"
     exit 1
 fi
+configure_flutter "$FLUTTER"
 
 update_version
 
