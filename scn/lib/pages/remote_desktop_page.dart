@@ -437,7 +437,8 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                     controller: _hostCtrl,
                     decoration: const InputDecoration(
                       labelText: 'WAN/LAN ID, IP, host или IP:порт',
-                      helperText: 'Например: 256 884 790 или 192.168.1.9:53317',
+                      helperText:
+                          'Экран: WAN ID или IP. Файлы: только LAN IP:порт.',
                       border: OutlineInputBorder(),
                     ),
                   ),
@@ -893,6 +894,18 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   }
 
   void _onManualOpenFiles() {
+    final input = _hostCtrl.text.trim();
+    if (_isWanOnlyCode(input)) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Файлы через WAN ID пока не поддержаны. Для файлов укажите LAN IP:порт удалённого хоста.',
+          ),
+        ),
+      );
+      return;
+    }
+
     final target = _resolveConnectTarget();
     if (target == null) {
       ScaffoldMessenger.of(context).showSnackBar(
@@ -914,6 +927,13 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
         title: 'Files: ${target.host}',
       ),
     ));
+  }
+
+  bool _isWanOnlyCode(String input) {
+    final normalizedCode = _digitsOnly(input);
+    return RegExp(r'^[\d\s-]+$').hasMatch(input) &&
+        normalizedCode.length >= 6 &&
+        !_hasLanDeviceForCode(normalizedCode);
   }
 
   _ConnectTarget? _resolveConnectTarget() {
