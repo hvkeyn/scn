@@ -72,12 +72,42 @@ require_command() {
     fi
 }
 
+apt_install_any() {
+    local label="$1"
+    shift
+
+    local pkg
+    for pkg in "$@"; do
+        if run_with_sudo apt-get install -y -qq "$pkg"; then
+            return 0
+        fi
+    done
+
+    echo -e "   ${RED}[FAIL]${NC} Unable to install $label. Tried packages: $*" >&2
+    return 1
+}
+
+apt_install_optional_any() {
+    local label="$1"
+    shift
+
+    local pkg
+    for pkg in "$@"; do
+        if run_with_sudo apt-get install -y -qq "$pkg"; then
+            return 0
+        fi
+    done
+
+    echo -e "   ${YELLOW}[WARN]${NC} Optional dependency was not installed: $label ($*)"
+    return 0
+}
+
 # Install dependencies
 install_deps() {
     echo -e "\n${CYAN}>> Installing build dependencies...${NC}"
 
     local need_install=0
-    for cmd in curl git unzip tar clang cmake ninja pkg-config; do
+    for cmd in curl git unzip tar xz clang cmake ninja pkg-config; do
         if ! command -v "$cmd" &>/dev/null; then
             need_install=1
         fi
@@ -93,18 +123,25 @@ install_deps() {
     
     if command -v apt-get &>/dev/null; then
         run_with_sudo apt-get update -qq
-        run_with_sudo apt-get install -y -qq \
-            curl git unzip xz-utils zip \
-            clang cmake ninja-build pkg-config \
-            libgtk-3-dev liblzma-dev
-        run_with_sudo apt-get install -y -qq libstdc++-12-dev || true
+        apt_install_any curl curl
+        apt_install_any git git
+        apt_install_any unzip unzip
+        apt_install_any zip zip
+        apt_install_any xz xz-utils xz
+        apt_install_any clang clang
+        apt_install_any cmake cmake
+        apt_install_any ninja ninja-build ninja
+        apt_install_any pkg-config pkg-config pkgconfig
+        apt_install_any "GTK 3 development files" libgtk-3-dev libgtk+3-devel gtk3-devel
+        apt_install_optional_any "liblzma development files" liblzma-dev liblzma-devel
+        apt_install_optional_any "libstdc++ development files" libstdc++-12-dev libstdc++-devel
     elif command -v pacman &>/dev/null; then
         run_with_sudo pacman -Sy --noconfirm \
-            curl git unzip zip \
+            curl git unzip zip xz \
             clang cmake ninja pkgconf gtk3
     elif command -v dnf &>/dev/null; then
         run_with_sudo dnf install -y \
-            curl git unzip zip \
+            curl git unzip zip xz \
             clang cmake ninja-build pkgconfig gtk3-devel
     elif command -v zypper &>/dev/null; then
         run_with_sudo zypper --non-interactive install \
@@ -118,6 +155,7 @@ install_deps() {
     require_command git
     require_command unzip
     require_command tar
+    require_command xz
     require_command clang
     require_command cmake
     require_command ninja
