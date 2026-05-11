@@ -35,6 +35,36 @@ echo -e "${YELLOW}======================================${NC}"
 echo -e "${YELLOW}       SCN Build Script${NC}"
 echo -e "${YELLOW}======================================${NC}"
 
+# Workaround Flutter 3.24.5 pub-client bug:
+# `HostedSource._getAdvisories.readAdvisoriesFromCache` падает с
+# "Null check operator used on a null value". Чистим кеш advisories
+# и пробуем pub get ещё раз (и при необходимости --offline).
+pub_get_with_retry() {
+    local FL="$1"
+    local out
+    if out=$($FL pub get 2>&1); then
+        echo "$out"
+        return 0
+    fi
+    echo "$out"
+    if echo "$out" | grep -qE "readAdvisoriesFromCache|advisoriesUpdated must be a String|Null check operator used on a null value"; then
+        echo -e "   ${YELLOW}Detected pub advisories cache bug; clearing cache and retrying...${NC}"
+        rm -rf "$HOME/.pub-cache/advisories" 2>/dev/null || true
+        [ -n "${PUB_CACHE:-}" ] && rm -rf "$PUB_CACHE/advisories" 2>/dev/null || true
+        if out2=$($FL pub get 2>&1); then
+            echo "$out2"
+            return 0
+        fi
+        echo "$out2"
+        if out3=$($FL pub get --offline 2>&1); then
+            echo "$out3"
+            return 0
+        fi
+        echo "$out3"
+    fi
+    return 1
+}
+
 run_without_root_if_needed() {
     if [ "$(id -u)" -ne 0 ]; then
         return 0
@@ -322,7 +352,7 @@ build_linux() {
     fi
     
     echo -e "   ${GRAY}Getting dependencies...${NC}"
-    $FL pub get
+    pub_get_with_retry "$FL" || return 1
     
     echo -e "   ${GRAY}Building release...${NC}"
     $FL build linux --release
@@ -383,7 +413,7 @@ build_windows() {
     mkdir -p "$RELEASES_DIR/windows"
     cd "$SCN_DIR"
     
-    $FL pub get
+    pub_get_with_retry "$FL" || return 1
     $FL build windows --release 2>&1 || {
         echo -e "   ${RED}[FAIL]${NC} Windows cross-compile not available"
         return 1

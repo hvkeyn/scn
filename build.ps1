@@ -54,6 +54,85 @@ function Configure-Flutter {
     & $Flutter config --no-cli-animations 2>$null | Out-Null
 }
 
+# Чистит кеш advisories Pub (для воркэраунда бага в Flutter 3.24.5,
+# где HostedSource._getAdvisories.readAdvisoriesFromCache падает с
+# "Null check operator used on a null value").
+function Reset-PubAdvisoriesCache {
+    $cacheRoots = @()
+    if ($env:PUB_CACHE) { $cacheRoots += $env:PUB_CACHE }
+    if ($env:LOCALAPPDATA) { $cacheRoots += (Join-Path $env:LOCALAPPDATA "Pub\Cache") }
+    if ($env:APPDATA) { $cacheRoots += (Join-Path $env:APPDATA "Pub\Cache") }
+    if ($env:USERPROFILE) { $cacheRoots += (Join-Path $env:USERPROFILE ".pub-cache") }
+
+    $cleared = $false
+    foreach ($root in $cacheRoots | Select-Object -Unique) {
+        if (-not (Test-Path $root)) { continue }
+        $advisories = Join-Path $root "advisories"
+        if (Test-Path $advisories) {
+            try {
+                Remove-Item -Recurse -Force $advisories -ErrorAction Stop
+                Write-Host "   Cleared pub advisories cache: $advisories" -ForegroundColor Gray
+                $cleared = $true
+            } catch {
+                Write-Host "   [WARN] Could not clear $advisories : $_" -ForegroundColor Yellow
+            }
+        }
+    }
+    return $cleared
+}
+
+# Запускает `flutter pub get` и при характерной для Flutter 3.24.5
+# ошибке (Null check operator used on a null value в readAdvisoriesFromCache)
+# чистит кеш и повторяет один раз.
+function Invoke-PubGet {
+    param(
+        [string]$Flutter,
+        [string]$Cwd
+    )
+
+    Push-Location $Cwd
+    try {
+        $out = & $Flutter pub get 2>&1
+        $exit = $LASTEXITCODE
+        $out | ForEach-Object { Write-Host $_ }
+        if ($exit -eq 0) { return $true }
+
+        $joined = ($out | Out-String)
+        $isAdvisoryBug = ($joined -match "readAdvisoriesFromCache" ) -or
+                        ($joined -match "advisoriesUpdated must be a String") -or
+                        ($joined -match "Null check operator used on a null value")
+        if (-not $isAdvisoryBug) {
+            return $false
+        }
+
+        Write-Host "   Detected pub advisories cache bug; clearing cache and retrying..." -ForegroundColor Yellow
+        Reset-PubAdvisoriesCache | Out-Null
+
+        # Доп. флаг отключает онлайн-проверку advisories во время решения.
+        $env:PUB_ALLOW_PRERELEASE_SDK = "quiet"
+        $out2 = & $Flutter pub get --no-precompile 2>&1
+        $exit2 = $LASTEXITCODE
+        $out2 | ForEach-Object { Write-Host $_ }
+        if ($exit2 -eq 0) { return $true }
+
+        $joined2 = ($out2 | Out-String)
+        if ($joined2 -match "readAdvisoriesFromCache" -or
+            $joined2 -match "advisoriesUpdated must be a String" -or
+            $joined2 -match "Null check operator used on a null value") {
+            Write-Host "   Pub advisories bug persists; trying offline mode..." -ForegroundColor Yellow
+            Reset-PubAdvisoriesCache | Out-Null
+            $out3 = & $Flutter pub get --offline 2>&1
+            $exit3 = $LASTEXITCODE
+            $out3 | ForEach-Object { Write-Host $_ }
+            if ($exit3 -eq 0) { return $true }
+        }
+
+        return $false
+    } finally {
+        Pop-Location
+    }
+}
+
 # Kill processes
 function Clear-Processes {
     Get-Process -Name "dart", "flutter", "pub" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
@@ -236,12 +315,12 @@ function Build-Windows {
     }
     
     Write-Host "   Getting dependencies..." -ForegroundColor Gray
-    & $Flutter pub get
-    if ($LASTEXITCODE -ne 0) {
+    Pop-Location
+    if (-not (Invoke-PubGet -Flutter $Flutter -Cwd $ScnDir)) {
         Write-Host "   [FAIL] pub get failed" -ForegroundColor Red
-        Pop-Location
         return $false
     }
+    Push-Location $ScnDir
     
     Write-Host "   Building release..." -ForegroundColor Gray
     & $Flutter build windows --release
@@ -327,7 +406,23 @@ fi
 
 cd "$wslPath/scn"
 `$FL config --enable-linux-desktop 2>/dev/null || true
-`$FL pub get
+
+# Workaround Flutter 3.24.5 pub-advisories bug
+pub_get_with_retry() {
+    local out
+    out=`$(`$FL pub get 2>&1) && { echo "`$out"; return 0; }
+    echo "`$out"
+    if echo "`$out" | grep -qE "readAdvisoriesFromCache|advisoriesUpdated must be a String|Null check operator used on a null value"; then
+        echo "Detected pub advisories cache bug; clearing cache and retrying..."
+        rm -rf "`$HOME/.pub-cache/advisories" 2>/dev/null || true
+        rm -rf "`$PUB_CACHE/advisories" 2>/dev/null || true
+        `$FL pub get && return 0
+        `$FL pub get --offline && return 0
+    fi
+    return 1
+}
+
+pub_get_with_retry || exit 1
 `$FL build linux --release
 echo "BUILD_OK"
 "@
