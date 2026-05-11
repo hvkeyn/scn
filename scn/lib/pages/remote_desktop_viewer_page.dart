@@ -48,6 +48,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   int _pressedMouseButtons = 0;
   bool _disconnecting = false;
 
+  Timer? _clipboardPollTimer;
+  String? _lastSyncedClipboardText;
+
   @override
   void initState() {
     super.initState();
@@ -77,6 +80,29 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     if (_ownsClient) {
       _connect();
     }
+    _startClipboardPolling();
+  }
+
+  /// Периодически отправляет содержимое локального буфера обмена на хост,
+  /// если оно изменилось — это вторая половина двунаправленного clipboard
+  /// sync (host шлёт свой буфер сам). Опрос редкий (1.5 c), чтобы не
+  /// мешать пользователю.
+  void _startClipboardPolling() {
+    _clipboardPollTimer?.cancel();
+    _clipboardPollTimer =
+        Timer.periodic(const Duration(milliseconds: 1500), (_) async {
+      if (!mounted) return;
+      if (!_controlActive) return;
+      try {
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        final text = data?.text;
+        if (text == null || text.isEmpty) return;
+        if (text == _lastSyncedClipboardText) return;
+        if (_client.sendClipboardUpdate(text)) {
+          _lastSyncedClipboardText = text;
+        }
+      } catch (_) {}
+    });
   }
 
   Future<void> _connect() async {
@@ -137,6 +163,8 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   void dispose() {
     AppLogger.log(
         'RD viewer: dispose, ownsClient=$_ownsClient disconnecting=$_disconnecting');
+    _clipboardPollTimer?.cancel();
+    _clipboardPollTimer = null;
     _errorSub?.cancel();
     _focusNode.dispose();
     _client.removeListener(_onClientChange);
