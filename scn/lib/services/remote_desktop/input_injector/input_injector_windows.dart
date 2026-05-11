@@ -168,42 +168,64 @@ class WindowsInputInjector implements InputInjector {
     if (WinKeymap.isExtendedKey(vk)) {
       flags |= KEYEVENTF_EXTENDEDKEY;
     }
-    final pInputs = calloc<INPUT>();
-    try {
-      pInputs.ref.type = INPUT_KEYBOARD;
-      final ki = pInputs.ref.ki;
-      ki.wVk = vk;
-      ki.wScan = scan;
-      ki.dwFlags = flags;
-      ki.time = 0;
-      ki.dwExtraInfo = 0;
-      _sendInput(1, pInputs);
-    } finally {
-      calloc.free(pInputs);
+    // Если foreground — elevated окно, перед SendInput цепляем нашу
+    // input-очередь к его потоку. Иногда этого достаточно, чтобы пройти
+    // фильтр UIPI для клавиатуры.
+    final elevatedHwnd = _elevatedForegroundHwnd();
+    int? attachedTid;
+    if (elevatedHwnd != null) {
+      attachedTid = _attachToHwndThread(elevatedHwnd);
     }
-    // Фолбэк для окон, защищённых UIPI (UAC consent.exe и т.п.):
-    // SendInput туда не доходит из-за разных integrity levels, но
-    // PostMessage с WM_KEYDOWN/WM_KEYUP/WM_CHAR разрешён по дефолтному
-    // фильтру UIPI и попадает в фокусный контрол.
-    _postKeyToElevatedForeground(vk, scan, down: down, charHint: charHint);
+    try {
+      final pInputs = calloc<INPUT>();
+      try {
+        pInputs.ref.type = INPUT_KEYBOARD;
+        final ki = pInputs.ref.ki;
+        ki.wVk = vk;
+        ki.wScan = scan;
+        ki.dwFlags = flags;
+        ki.time = 0;
+        ki.dwExtraInfo = 0;
+        _sendInput(1, pInputs);
+      } finally {
+        calloc.free(pInputs);
+      }
+    } finally {
+      if (attachedTid != null) _detachFromThread(attachedTid);
+    }
+    // Дополнительный фолбэк для UAC и других elevated окон:
+    // напрямую посылаем оконные сообщения в фокусный HWND.
+    if (elevatedHwnd != null) {
+      _postKeyToHwnd(elevatedHwnd, vk, scan,
+          down: down, charHint: charHint);
+    }
   }
 
   void _sendUnicodeChar(int charCode, {required bool down}) {
-    final pInputs = calloc<INPUT>();
-    try {
-      pInputs.ref.type = INPUT_KEYBOARD;
-      final ki = pInputs.ref.ki;
-      ki.wVk = 0;
-      ki.wScan = charCode;
-      ki.dwFlags = KEYEVENTF_UNICODE | (down ? 0 : KEYEVENTF_KEYUP);
-      ki.time = 0;
-      ki.dwExtraInfo = 0;
-      _sendInput(1, pInputs);
-    } finally {
-      calloc.free(pInputs);
+    final elevatedHwnd = _elevatedForegroundHwnd();
+    int? attachedTid;
+    if (elevatedHwnd != null) {
+      attachedTid = _attachToHwndThread(elevatedHwnd);
     }
-    if (down) {
-      _postCharToElevatedForeground(charCode);
+    try {
+      final pInputs = calloc<INPUT>();
+      try {
+        pInputs.ref.type = INPUT_KEYBOARD;
+        final ki = pInputs.ref.ki;
+        ki.wVk = 0;
+        ki.wScan = charCode;
+        ki.dwFlags = KEYEVENTF_UNICODE | (down ? 0 : KEYEVENTF_KEYUP);
+        ki.time = 0;
+        ki.dwExtraInfo = 0;
+        _sendInput(1, pInputs);
+      } finally {
+        calloc.free(pInputs);
+      }
+    } finally {
+      if (attachedTid != null) _detachFromThread(attachedTid);
+    }
+    if (down && elevatedHwnd != null) {
+      _postCharToHwnd(elevatedHwnd, charCode);
     }
   }
 
@@ -214,17 +236,30 @@ class WindowsInputInjector implements InputInjector {
     }
   }
 
-  // -- UIPI fallback (PostMessage) --
+  int? _attachToHwndThread(int hwnd) {
+    final targetTid = GetWindowThreadProcessId(hwnd, nullptr);
+    if (targetTid == 0) return null;
+    final ourTid = GetCurrentThreadId();
+    if (ourTid == targetTid) return null;
+    final ok = AttachThreadInput(ourTid, targetTid, TRUE);
+    if (ok == 0) return null;
+    return targetTid;
+  }
 
-  /// Кэш HWND и pid foreground-окна, чтобы не дёргать
-  /// QueryFullProcessImageName на каждое нажатие.
+  void _detachFromThread(int targetTid) {
+    final ourTid = GetCurrentThreadId();
+    AttachThreadInput(ourTid, targetTid, FALSE);
+  }
+
+  // -- UIPI fallback --
+
   int _cachedFgHwnd = 0;
   bool _cachedFgIsElevated = false;
+  String _cachedFgProcessName = '';
   DateTime _cachedFgCheckedAt = DateTime.fromMillisecondsSinceEpoch(0);
 
-  /// Возвращает HWND foreground-окна, если оно принадлежит процессу
-  /// с более высоким integrity level (UAC consent.exe и пр.).
-  /// Иначе возвращает null.
+  /// Возвращает HWND foreground-окна, если оно скорее всего защищено UIPI
+  /// (UAC consent.exe, credential UI, lsass, etc). Иначе null.
   int? _elevatedForegroundHwnd() {
     final hwnd = GetForegroundWindow();
     if (hwnd == 0) return null;
@@ -235,31 +270,32 @@ class WindowsInputInjector implements InputInjector {
     }
     _cachedFgHwnd = hwnd;
     _cachedFgCheckedAt = now;
-    _cachedFgIsElevated = _isHwndElevated(hwnd);
+    final detected = _detectForegroundProcess(hwnd);
+    _cachedFgProcessName = detected;
+    _cachedFgIsElevated = _isProcessElevated(detected);
+    if (_cachedFgIsElevated) {
+      AppLogger.log(
+          'WindowsInputInjector: elevated foreground=$detected (hwnd=$hwnd) — '
+          'using PostMessage fallback');
+    }
     return _cachedFgIsElevated ? hwnd : null;
   }
 
-  bool _isHwndElevated(int hwnd) {
+  String _detectForegroundProcess(int hwnd) {
     final pidPtr = calloc<Uint32>();
     try {
       GetWindowThreadProcessId(hwnd, pidPtr);
       final pid = pidPtr.value;
-      if (pid == 0) return false;
+      if (pid == 0) return '';
       final hProc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
-      if (hProc == 0) return false;
+      if (hProc == 0) return '';
       try {
         final buf = wsalloc(MAX_PATH);
         final sizePtr = calloc<Uint32>()..value = MAX_PATH;
         try {
           final ok = QueryFullProcessImageName(hProc, 0, buf, sizePtr);
-          if (ok == 0) return false;
-          final path = buf.toDartString().toLowerCase();
-          // consent.exe — UAC consent UI. Остальные системные диалоги
-          // (Защитник Windows и т.п.) тоже стоит ловить, но consent.exe
-          // покрывает основной кейс.
-          if (path.endsWith(r'\consent.exe')) return true;
-          if (path.endsWith(r'\lsass.exe')) return true;
-          return false;
+          if (ok == 0) return '';
+          return buf.toDartString();
         } finally {
           free(buf);
           calloc.free(sizePtr);
@@ -272,40 +308,60 @@ class WindowsInputInjector implements InputInjector {
     }
   }
 
-  /// Находит фокусный HWND внутри указанного окна и постит туда WM_KEYDOWN/UP.
-  /// Для печатаемых клавиш дополнительно постит WM_CHAR.
-  void _postKeyToElevatedForeground(int vk, int scan,
+  bool _isProcessElevated(String fullPath) {
+    if (fullPath.isEmpty) return false;
+    final lower = fullPath.toLowerCase();
+    const elevatedNames = [
+      r'\consent.exe',
+      r'\lsass.exe',
+      r'\credentialuibroker.exe',
+      r'\logonui.exe',
+      r'\runas.exe',
+      r'\securityhealthsystray.exe',
+    ];
+    for (final name in elevatedNames) {
+      if (lower.endsWith(name)) return true;
+    }
+    return false;
+  }
+
+  void _postKeyToHwnd(int fg, int vk, int scan,
       {required bool down, String? charHint}) {
-    final fg = _elevatedForegroundHwnd();
-    if (fg == null) return;
     final target = _focusHwndFor(fg) ?? fg;
     int lParam = 1 | (scan << 16);
     if (WinKeymap.isExtendedKey(vk)) {
       lParam |= 1 << 24;
     }
     if (down) {
+      // Используем SendMessage (sync), чтобы XAML-host консента успел
+      // обработать сообщение до следующего keystroke. После него
+      // дублируем PostMessage — некоторые контролы реагируют только на
+      // async очередь.
+      SendMessage(target, WM_KEYDOWN, vk, lParam);
       PostMessage(target, WM_KEYDOWN, vk, lParam);
+      int? charCode;
       if (charHint != null && charHint.isNotEmpty) {
-        PostMessage(target, WM_CHAR, charHint.codeUnitAt(0), lParam);
+        charCode = charHint.codeUnitAt(0);
       } else {
-        // Эмулируем стандартную раскладку: ToUnicode на хосте может
-        // выдать символ для VK без явного charHint.
-        final ch = _vkToChar(vk);
-        if (ch != null) {
-          PostMessage(target, WM_CHAR, ch, lParam);
-        }
+        charCode = _vkToChar(vk);
+      }
+      if (charCode != null) {
+        SendMessage(target, WM_CHAR, charCode, lParam);
+        PostMessage(target, WM_CHAR, charCode, lParam);
       }
     } else {
-      lParam |= 0x3 << 30; // previous state set + transition state set
+      lParam |= 0x3 << 30;
+      SendMessage(target, WM_KEYUP, vk, lParam);
       PostMessage(target, WM_KEYUP, vk, lParam);
     }
   }
 
-  void _postCharToElevatedForeground(int charCode) {
-    final fg = _elevatedForegroundHwnd();
-    if (fg == null) return;
+  void _postCharToHwnd(int fg, int charCode) {
     final target = _focusHwndFor(fg) ?? fg;
-    PostMessage(target, WM_CHAR, charCode, 1);
+    final scan = MapVirtualKey(charCode, MAP_VIRTUAL_KEY_TYPE.MAPVK_VK_TO_VSC);
+    final lParam = 1 | (scan << 16);
+    SendMessage(target, WM_CHAR, charCode, lParam);
+    PostMessage(target, WM_CHAR, charCode, lParam);
   }
 
   int? _focusHwndFor(int hwnd) {

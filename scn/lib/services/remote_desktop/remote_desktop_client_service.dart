@@ -556,6 +556,15 @@ class RemoteDesktopClientService extends ChangeNotifier {
     ));
   }
 
+  /// Последний текст, который мы знаем как "общий с хостом". И отправляли
+  /// сами на хост, и получали с хоста — главное, чтобы не зациклиться.
+  String? _knownSharedClipboardText;
+  String? get knownSharedClipboardText => _knownSharedClipboardText;
+
+  void noteLocalClipboardSent(String text) {
+    _knownSharedClipboardText = text;
+  }
+
   void _onInputChannelMessage(RTCDataChannelMessage message) {
     if (message.isBinary) return;
     try {
@@ -564,11 +573,39 @@ class RemoteDesktopClientService extends ChangeNotifier {
       if (raw['type'] != 'clipboardUpdate') return;
       final text = raw['text'] as String?;
       if (text == null) return;
+      _knownSharedClipboardText = text;
       unawaited(Clipboard.setData(ClipboardData(text: text)));
       AppLogger.log(
           'RD client: received remote clipboard update (${text.length} chars)');
     } catch (e) {
       AppLogger.log('RD client: input channel message parse failed: $e');
+    }
+  }
+
+  /// Отправить буфер обмена viewer'а на хост (двунаправленный clipboard sync).
+  /// Хост, получив `{type:'clipboardUpdate', text}`, выставит у себя такой же
+  /// буфер. PASTE не вызывается — это просто синхронизация контента.
+  bool sendClipboardUpdate(String text) {
+    if (_session?.inputMode != RemoteDesktopInputMode.full) return false;
+    if (text == _knownSharedClipboardText) return false;
+    final channel = _inputChannel;
+    if (channel == null ||
+        channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+      return false;
+    }
+    try {
+      channel.send(RTCDataChannelMessage(jsonEncode({
+        'type': 'clipboardUpdate',
+        'text': text,
+        'ts': DateTime.now().microsecondsSinceEpoch,
+      })));
+      _knownSharedClipboardText = text;
+      AppLogger.log(
+          'RD client: pushed local clipboard to host (${text.length} chars)');
+      return true;
+    } catch (e) {
+      AppLogger.log('RD client: sendClipboardUpdate failed: $e');
+      return false;
     }
   }
 

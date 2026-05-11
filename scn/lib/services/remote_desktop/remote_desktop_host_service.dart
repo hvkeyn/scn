@@ -66,7 +66,13 @@ class _HostSession {
   /// Логические клавиши, которые сейчас удерживаются viewer'ом.
   final Set<int> heldKeys = <int>{};
 
+  /// Последний известный текст буфера обмена. Используется и для исходящей
+  /// (host → viewer), и для входящей (viewer → host) синхронизации, чтобы
+  /// не зациклиться: получив от viewer'а свой же текст, не слать его обратно.
   String? lastClipboardText;
+
+  /// Таймер периодической синхронизации буфера обмена (1.5 c).
+  Timer? clipboardPollTimer;
 
   _HostSession({
     required this.sessionId,
@@ -604,6 +610,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
               session.status == RemoteDesktopSessionStatus.streaming;
           session.status = RemoteDesktopSessionStatus.streaming;
           if (!wasStreaming) {
+            _startClipboardPolling(session);
             // Съёживаем главное окно SCN до 1×1 в углу. НЕ minimize —
             // Flutter в minimized уходит в paused и DataChannel.onMessage
             // перестаёт обрабатываться (входящие mouseUp залипают). 1×1
@@ -651,7 +658,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
           };
           channel.onMessage = (msg) {
             if (!msg.isBinary) {
-              _onInputEvent(session, msg.text);
+              _onInputChannelText(session, msg.text);
             }
           };
         }
@@ -846,6 +853,34 @@ class RemoteDesktopHostService extends ChangeNotifier {
     }
   }
 
+  /// Разбирает входящее текстовое сообщение от viewer'а: это может быть либо
+  /// обычное input-событие, либо служебное (например, clipboardUpdate от
+  /// viewer'а — двунаправленная синхронизация буфера обмена).
+  void _onInputChannelText(_HostSession session, String text) {
+    try {
+      final decoded = jsonDecode(text);
+      if (decoded is Map<String, dynamic>) {
+        final type = decoded['type'];
+        if (type == 'clipboardUpdate') {
+          _onViewerClipboardUpdate(session, decoded);
+          return;
+        }
+      }
+    } catch (_) {}
+    _onInputEvent(session, text);
+  }
+
+  void _onViewerClipboardUpdate(
+      _HostSession session, Map<String, dynamic> payload) {
+    final text = payload['text'];
+    if (text is! String) return;
+    if (text == session.lastClipboardText) return;
+    session.lastClipboardText = text;
+    unawaited(Clipboard.setData(ClipboardData(text: text)));
+    AppLogger.log(
+        'RD host: applied viewer clipboard update (${text.length} chars)');
+  }
+
   void _onInputEvent(_HostSession session, String jsonText) {
     if (!session.grantsControl) {
       AppLogger.log(
@@ -872,6 +907,36 @@ class RemoteDesktopHostService extends ChangeNotifier {
     } catch (e, st) {
       AppLogger.log('RD input parse/inject error: $e\n$st');
     }
+  }
+
+  /// Периодически читает локальный буфер обмена хоста и при изменении
+  /// шлёт текст viewer'у. Это покрывает кейс, когда пользователь копирует
+  /// текст руками на самом хосте (без удалённого Ctrl+C от viewer'a).
+  void _startClipboardPolling(_HostSession session) {
+    session.clipboardPollTimer?.cancel();
+    session.clipboardPollTimer =
+        Timer.periodic(const Duration(milliseconds: 1500), (_) async {
+      if (session.status != RemoteDesktopSessionStatus.streaming) return;
+      final channel = session.inputChannel;
+      if (channel == null ||
+          channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+        return;
+      }
+      try {
+        final data = await Clipboard.getData(Clipboard.kTextPlain);
+        final text = data?.text;
+        if (text == null || text.isEmpty) return;
+        if (text == session.lastClipboardText) return;
+        session.lastClipboardText = text;
+        channel.send(RTCDataChannelMessage(jsonEncode({
+          'type': 'clipboardUpdate',
+          'text': text,
+          'ts': DateTime.now().microsecondsSinceEpoch,
+        })));
+        AppLogger.log(
+            'RD host: clipboard poll sent ${text.length} chars to viewer');
+      } catch (_) {}
+    });
   }
 
   void _maybeSendClipboardUpdate(_HostSession session, RemoteInputEvent event) {
@@ -1152,6 +1217,8 @@ class RemoteDesktopHostService extends ChangeNotifier {
     session.statsTimer?.cancel();
     session.wsConnectWatchdog?.cancel();
     session.wsConnectWatchdog = null;
+    session.clipboardPollTimer?.cancel();
+    session.clipboardPollTimer = null;
     if (wasStreaming) {
       HostWindowManager.onSessionEnded();
     }
