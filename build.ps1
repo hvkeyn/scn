@@ -54,9 +54,11 @@ function Configure-Flutter {
     & $Flutter config --no-cli-animations 2>$null | Out-Null
 }
 
-# Чистит кеш advisories Pub (для воркэраунда бага в Flutter 3.24.5,
-# где HostedSource._getAdvisories.readAdvisoriesFromCache падает с
-# "Null check operator used on a null value").
+# Чистит pub-кеши, где Flutter 3.24.5 пишет битые JSON без поля
+# advisoriesUpdated. Из-за этого readAdvisoriesFromCache падает с
+# "Null check operator used on a null value". Удаляем:
+#  - <pub-cache>/advisories          (новый формат, если есть)
+#  - <pub-cache>/hosted/pub.dev/.cache (versions/advisories per package)
 function Reset-PubAdvisoriesCache {
     $cacheRoots = @()
     if ($env:PUB_CACHE) { $cacheRoots += $env:PUB_CACHE }
@@ -67,14 +69,27 @@ function Reset-PubAdvisoriesCache {
     $cleared = $false
     foreach ($root in $cacheRoots | Select-Object -Unique) {
         if (-not (Test-Path $root)) { continue }
+
         $advisories = Join-Path $root "advisories"
         if (Test-Path $advisories) {
             try {
                 Remove-Item -Recurse -Force $advisories -ErrorAction Stop
-                Write-Host "   Cleared pub advisories cache: $advisories" -ForegroundColor Gray
+                Write-Host "   Cleared $advisories" -ForegroundColor Gray
                 $cleared = $true
             } catch {
                 Write-Host "   [WARN] Could not clear $advisories : $_" -ForegroundColor Yellow
+            }
+        }
+
+        $hostedCache = Join-Path $root "hosted\pub.dev\.cache"
+        if (Test-Path $hostedCache) {
+            try {
+                Get-ChildItem -Path $hostedCache -Filter "*.json" -Force -ErrorAction SilentlyContinue |
+                    Remove-Item -Force -ErrorAction Stop
+                Write-Host "   Cleared $hostedCache" -ForegroundColor Gray
+                $cleared = $true
+            } catch {
+                Write-Host "   [WARN] Could not clear $hostedCache : $_" -ForegroundColor Yellow
             }
         }
     }
@@ -408,14 +423,23 @@ cd "$wslPath/scn"
 `$FL config --enable-linux-desktop 2>/dev/null || true
 
 # Workaround Flutter 3.24.5 pub-advisories bug
+reset_pub_cache() {
+    for root in "`$HOME/.pub-cache" "`${PUB_CACHE:-}"; do
+        [ -d "`$root" ] || continue
+        rm -rf "`$root/advisories" 2>/dev/null || true
+        if [ -d "`$root/hosted/pub.dev/.cache" ]; then
+            rm -f "`$root/hosted/pub.dev/.cache"/*.json 2>/dev/null || true
+        fi
+    done
+}
+
 pub_get_with_retry() {
     local out
     out=`$(`$FL pub get 2>&1) && { echo "`$out"; return 0; }
     echo "`$out"
     if echo "`$out" | grep -qE "readAdvisoriesFromCache|advisoriesUpdated must be a String|Null check operator used on a null value"; then
         echo "Detected pub advisories cache bug; clearing cache and retrying..."
-        rm -rf "`$HOME/.pub-cache/advisories" 2>/dev/null || true
-        rm -rf "`$PUB_CACHE/advisories" 2>/dev/null || true
+        reset_pub_cache
         `$FL pub get && return 0
         `$FL pub get --offline && return 0
     fi

@@ -37,8 +37,31 @@ echo -e "${YELLOW}======================================${NC}"
 
 # Workaround Flutter 3.24.5 pub-client bug:
 # `HostedSource._getAdvisories.readAdvisoriesFromCache` падает с
-# "Null check operator used on a null value". Чистим кеш advisories
-# и пробуем pub get ещё раз (и при необходимости --offline).
+# "Null check operator used on a null value". Чистим кеши, в которых
+# pub пишет битые JSON без поля advisoriesUpdated:
+#   - $PUB_CACHE/advisories
+#   - $PUB_CACHE/hosted/pub.dev/.cache/*.json
+reset_pub_advisories_cache() {
+    local roots=()
+    [ -n "${PUB_CACHE:-}" ] && roots+=("$PUB_CACHE")
+    roots+=("$HOME/.pub-cache")
+    roots+=("$HOME/AppData/Local/Pub/Cache")
+    local seen=""
+    for root in "${roots[@]}"; do
+        case ":$seen:" in *":$root:"*) continue ;; esac
+        seen="$seen:$root"
+        [ -d "$root" ] || continue
+        if [ -d "$root/advisories" ]; then
+            rm -rf "$root/advisories" 2>/dev/null && \
+                echo "   Cleared $root/advisories"
+        fi
+        if [ -d "$root/hosted/pub.dev/.cache" ]; then
+            rm -f "$root/hosted/pub.dev/.cache"/*.json 2>/dev/null && \
+                echo "   Cleared $root/hosted/pub.dev/.cache/*.json"
+        fi
+    done
+}
+
 pub_get_with_retry() {
     local FL="$1"
     local out
@@ -49,8 +72,7 @@ pub_get_with_retry() {
     echo "$out"
     if echo "$out" | grep -qE "readAdvisoriesFromCache|advisoriesUpdated must be a String|Null check operator used on a null value"; then
         echo -e "   ${YELLOW}Detected pub advisories cache bug; clearing cache and retrying...${NC}"
-        rm -rf "$HOME/.pub-cache/advisories" 2>/dev/null || true
-        [ -n "${PUB_CACHE:-}" ] && rm -rf "$PUB_CACHE/advisories" 2>/dev/null || true
+        reset_pub_advisories_cache
         if out2=$($FL pub get 2>&1); then
             echo "$out2"
             return 0
