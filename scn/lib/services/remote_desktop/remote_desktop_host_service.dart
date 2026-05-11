@@ -14,6 +14,7 @@ import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/host_window_manager.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
+import 'package:scn/services/remote_desktop/secure_desktop_override.dart';
 import 'package:scn/utils/logger.dart';
 
 /// Внутреннее представление активной хост-сессии.
@@ -114,6 +115,10 @@ class RemoteDesktopHostService extends ChangeNotifier {
   // ignore: unused_field
   String _myAlias = 'SCN Device';
 
+  /// Глобальный override Secure Desktop на Windows. Один на сервис —
+  /// reuse'аем между сессиями, чтобы не двигать registry каждый раз.
+  final SecureDesktopOverride _uacOverride = SecureDesktopOverride();
+
   /// Стрим запросов на разрешение, на который подписывается UI слой.
   Stream<RemoteDesktopPermissionRequest> get approvalRequests =>
       _approvalController.stream;
@@ -132,7 +137,22 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
   /// Применить новые настройки (вызывается после изменения в UI).
   void applySettings(RemoteDesktopSettings settings) {
+    final previous = _settings;
     _settings = settings;
+    // Если пользователь сейчас переключил "Allow remote UAC control",
+    // а сессия уже идёт — синхронизируем состояние Secure Desktop.
+    final hasStreaming = _sessions.values.any((s) =>
+        s.status == RemoteDesktopSessionStatus.streaming &&
+        s.grantsControl);
+    if (hasStreaming &&
+        settings.allowUacInteraction &&
+        !previous.allowUacInteraction) {
+      unawaited(_uacOverride.engage());
+    } else if (!settings.allowUacInteraction &&
+        previous.allowUacInteraction &&
+        _uacOverride.isEngaged) {
+      unawaited(_uacOverride.disengage());
+    }
   }
 
   void setIdentity({required String deviceId, required String alias}) {
@@ -591,6 +611,12 @@ class RemoteDesktopHostService extends ChangeNotifier {
             // viewer'a не попадают в SCN UI (в 1 пиксель не попасть),
             // (3) свернётся при завершении сессии обратно.
             HostWindowManager.onSessionStarted();
+            // Если пользователь разрешил управлять окнами UAC — временно
+            // отключаем Secure Desktop. Без этого viewer теряет управление,
+            // как только Windows показывает UAC-окно.
+            if (session.grantsControl && _settings.allowUacInteraction) {
+              unawaited(_uacOverride.engage());
+            }
           }
           notifyListeners();
         } else if (state ==
@@ -1130,6 +1156,14 @@ class RemoteDesktopHostService extends ChangeNotifier {
       HostWindowManager.onSessionEnded();
     }
     _releaseAllHeldInput(session);
+    // Если больше не осталось активных стримов — восстанавливаем UAC.
+    final stillStreaming = _sessions.values.any((s) =>
+        s.sessionId != session.sessionId &&
+        (s.status == RemoteDesktopSessionStatus.streaming ||
+            s.status == RemoteDesktopSessionStatus.negotiating));
+    if (!stillStreaming && _uacOverride.isEngaged) {
+      unawaited(_uacOverride.disengage());
+    }
     try {
       _sendSignalToViewer(
           session,
@@ -1187,6 +1221,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
     _approvalController.close();
     _inputInjector.dispose();
     shutdown();
+    unawaited(_uacOverride.disengage());
     super.dispose();
   }
 }

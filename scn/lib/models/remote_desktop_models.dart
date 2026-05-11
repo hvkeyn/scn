@@ -366,6 +366,13 @@ class RemoteDesktopSettings {
   /// Какие "корни" доступны через файловый менеджер. Пустой = все диски/$HOME.
   final List<String> fileManagerAllowedRoots;
 
+  /// Разрешить виьюверу управлять окнами UAC на Windows.
+  /// При активной RD-сессии хост временно отключает Secure Desktop
+  /// (`PromptOnSecureDesktop = 0` в HKLM\...\Policies\System), чтобы
+  /// мышь и клавиатура работали в UAC. Снижает безопасность —
+  /// только опт-ин. На других ОС опция игнорируется.
+  final bool allowUacInteraction;
+
   const RemoteDesktopSettings({
     this.enabled = false,
     this.accessMode = RemoteDesktopAccessMode.passwordOrPrompt,
@@ -379,6 +386,7 @@ class RemoteDesktopSettings {
     this.fileManagerEnabled = true,
     this.fileManagerReadOnly = false,
     this.fileManagerAllowedRoots = const [],
+    this.allowUacInteraction = false,
   });
 
   RemoteDesktopSettings copyWith({
@@ -395,6 +403,7 @@ class RemoteDesktopSettings {
     bool? fileManagerEnabled,
     bool? fileManagerReadOnly,
     List<String>? fileManagerAllowedRoots,
+    bool? allowUacInteraction,
   }) {
     return RemoteDesktopSettings(
       enabled: enabled ?? this.enabled,
@@ -411,6 +420,7 @@ class RemoteDesktopSettings {
       fileManagerReadOnly: fileManagerReadOnly ?? this.fileManagerReadOnly,
       fileManagerAllowedRoots:
           fileManagerAllowedRoots ?? this.fileManagerAllowedRoots,
+      allowUacInteraction: allowUacInteraction ?? this.allowUacInteraction,
     );
   }
 
@@ -427,6 +437,7 @@ class RemoteDesktopSettings {
         'fileManagerEnabled': fileManagerEnabled,
         'fileManagerReadOnly': fileManagerReadOnly,
         'fileManagerAllowedRoots': fileManagerAllowedRoots,
+        'allowUacInteraction': allowUacInteraction,
       };
 
   factory RemoteDesktopSettings.fromJson(Map<String, dynamic> json) {
@@ -453,6 +464,7 @@ class RemoteDesktopSettings {
                   ?.map((e) => e.toString())
                   .toList() ??
               const [],
+      allowUacInteraction: json['allowUacInteraction'] as bool? ?? false,
     );
   }
 }
