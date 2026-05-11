@@ -35,6 +35,58 @@ echo -e "${YELLOW}======================================${NC}"
 echo -e "${YELLOW}       SCN Build Script${NC}"
 echo -e "${YELLOW}======================================${NC}"
 
+# Workaround Flutter 3.24.5 pub-client bug:
+# `HostedSource._getAdvisories.readAdvisoriesFromCache` падает с
+# "Null check operator used on a null value". Чистим кеши, в которых
+# pub пишет битые JSON без поля advisoriesUpdated:
+#   - $PUB_CACHE/advisories
+#   - $PUB_CACHE/hosted/pub.dev/.cache/*.json
+reset_pub_advisories_cache() {
+    local roots=()
+    [ -n "${PUB_CACHE:-}" ] && roots+=("$PUB_CACHE")
+    roots+=("$HOME/.pub-cache")
+    roots+=("$HOME/AppData/Local/Pub/Cache")
+    local seen=""
+    for root in "${roots[@]}"; do
+        case ":$seen:" in *":$root:"*) continue ;; esac
+        seen="$seen:$root"
+        [ -d "$root" ] || continue
+        if [ -d "$root/advisories" ]; then
+            rm -rf "$root/advisories" 2>/dev/null && \
+                echo "   Cleared $root/advisories"
+        fi
+        if [ -d "$root/hosted/pub.dev/.cache" ]; then
+            rm -f "$root/hosted/pub.dev/.cache"/*.json 2>/dev/null && \
+                echo "   Cleared $root/hosted/pub.dev/.cache/*.json"
+        fi
+    done
+}
+
+pub_get_with_retry() {
+    local FL="$1"
+    local out
+    if out=$($FL pub get 2>&1); then
+        echo "$out"
+        return 0
+    fi
+    echo "$out"
+    if echo "$out" | grep -qE "readAdvisoriesFromCache|advisoriesUpdated must be a String|Null check operator used on a null value"; then
+        echo -e "   ${YELLOW}Detected pub advisories cache bug; clearing cache and retrying...${NC}"
+        reset_pub_advisories_cache
+        if out2=$($FL pub get 2>&1); then
+            echo "$out2"
+            return 0
+        fi
+        echo "$out2"
+        if out3=$($FL pub get --offline 2>&1); then
+            echo "$out3"
+            return 0
+        fi
+        echo "$out3"
+    fi
+    return 1
+}
+
 run_without_root_if_needed() {
     if [ "$(id -u)" -ne 0 ]; then
         return 0
@@ -322,7 +374,7 @@ build_linux() {
     fi
     
     echo -e "   ${GRAY}Getting dependencies...${NC}"
-    $FL pub get
+    pub_get_with_retry "$FL" || return 1
     
     echo -e "   ${GRAY}Building release...${NC}"
     $FL build linux --release
@@ -383,7 +435,7 @@ build_windows() {
     mkdir -p "$RELEASES_DIR/windows"
     cd "$SCN_DIR"
     
-    $FL pub get
+    pub_get_with_retry "$FL" || return 1
     $FL build windows --release 2>&1 || {
         echo -e "   ${RED}[FAIL]${NC} Windows cross-compile not available"
         return 1
