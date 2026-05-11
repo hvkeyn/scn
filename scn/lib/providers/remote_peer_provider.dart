@@ -420,6 +420,11 @@ class RemotePeerProvider extends ChangeNotifier {
         _settings.remoteDesktop.copyWith(fileManagerAllowedRoots: roots));
   }
 
+  Future<void> setRemoteDesktopAllowUacInteraction(bool value) async {
+    await updateRemoteDesktopSettings(
+        _settings.remoteDesktop.copyWith(allowUacInteraction: value));
+  }
+
   Future<void> trustPeerForRemoteDesktop(String peerId) async {
     final list = List<String>.from(_settings.remoteDesktop.trustedPeerIds);
     if (!list.contains(peerId)) {

@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -1207,6 +1209,25 @@ class _SettingsTabState extends State<SettingsTab> {
               activeColor: theme.colorScheme.primary,
               onChanged: provider.setRemoteDesktopShareAudio,
             ),
+            if (Platform.isWindows) ...[
+              Divider(color: Colors.white.withOpacity(0.1)),
+              SwitchListTile(
+                secondary: Padding(
+                  padding: const EdgeInsets.only(left: 8),
+                  child: Icon(Icons.admin_panel_settings_outlined,
+                      color: Colors.white.withOpacity(0.6), size: 20),
+                ),
+                title: const Text('Allow remote UAC control (Windows)',
+                    style: TextStyle(color: Colors.white, fontSize: 14)),
+                subtitle: Text(
+                    'Disable Secure Desktop while a session is active so viewer can click UAC prompts. Lowers local security.',
+                    style: TextStyle(
+                        color: Colors.white.withOpacity(0.45), fontSize: 12)),
+                value: rd.allowUacInteraction,
+                activeColor: theme.colorScheme.primary,
+                onChanged: provider.setRemoteDesktopAllowUacInteraction,
+              ),
+            ],
             Divider(color: Colors.white.withOpacity(0.1)),
             ListTile(
               leading: Padding(
