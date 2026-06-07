@@ -13,6 +13,7 @@ import 'package:web_socket_channel/web_socket_channel.dart';
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/host_window_manager.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
+import 'package:scn/services/remote_desktop/input_injector/input_service_manager.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/services/remote_desktop/secure_desktop_override.dart';
 import 'package:scn/utils/logger.dart';
@@ -125,6 +126,11 @@ class RemoteDesktopHostService extends ChangeNotifier {
   /// reuse'аем между сессиями, чтобы не двигать registry каждый раз.
   final SecureDesktopOverride _uacOverride = SecureDesktopOverride();
 
+  /// Менеджер привилегированного сервиса ввода (Windows). Ставит/запускает
+  /// SYSTEM-сервис, через который ввод доходит до UAC/secure desktop.
+  final InputServiceManager _inputService = InputServiceManager();
+  bool _privilegedInputOn = false;
+
   /// Стрим запросов на разрешение, на который подписывается UI слой.
   Stream<RemoteDesktopPermissionRequest> get approvalRequests =>
       _approvalController.stream;
@@ -154,11 +160,37 @@ class RemoteDesktopHostService extends ChangeNotifier {
         settings.allowUacInteraction &&
         !previous.allowUacInteraction) {
       unawaited(_uacOverride.engage());
+      unawaited(_enablePrivilegedInput());
     } else if (!settings.allowUacInteraction &&
         previous.allowUacInteraction &&
         _uacOverride.isEngaged) {
       unawaited(_uacOverride.disengage());
+      unawaited(_disablePrivilegedInput());
     }
+  }
+
+  /// Поднимает привилегированный сервис ввода и включает его в инжекторе.
+  /// Нужен для ввода паролей/подтверждения в UAC (Windows).
+  Future<void> _enablePrivilegedInput() async {
+    if (_privilegedInputOn) return;
+    final ok = await _inputService.ensureRunning();
+    if (!ok) return;
+    _privilegedInputOn = true;
+    // Метод есть только у WindowsInputInjector — вызываем динамически, чтобы
+    // не тянуть платформенный тип в общий код.
+    try {
+      (_inputInjector as dynamic).setPrivilegedMode(true);
+    } catch (_) {}
+  }
+
+  /// Отключает привилегированный ввод и останавливает сервис.
+  Future<void> _disablePrivilegedInput() async {
+    if (!_privilegedInputOn) return;
+    _privilegedInputOn = false;
+    try {
+      (_inputInjector as dynamic).setPrivilegedMode(false);
+    } catch (_) {}
+    await _inputService.stop();
   }
 
   void setIdentity({required String deviceId, required String alias}) {
@@ -623,6 +655,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
             // как только Windows показывает UAC-окно.
             if (session.grantsControl && _settings.allowUacInteraction) {
               unawaited(_uacOverride.engage());
+              unawaited(_enablePrivilegedInput());
             }
           }
           notifyListeners();
@@ -1231,6 +1264,9 @@ class RemoteDesktopHostService extends ChangeNotifier {
     if (!stillStreaming && _uacOverride.isEngaged) {
       unawaited(_uacOverride.disengage());
     }
+    if (!stillStreaming && _privilegedInputOn) {
+      unawaited(_disablePrivilegedInput());
+    }
     try {
       _sendSignalToViewer(
           session,
@@ -1289,6 +1325,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
     _inputInjector.dispose();
     shutdown();
     unawaited(_uacOverride.disengage());
+    unawaited(_disablePrivilegedInput());
     super.dispose();
   }
 }

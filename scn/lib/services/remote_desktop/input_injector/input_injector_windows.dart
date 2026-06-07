@@ -7,15 +7,36 @@ import 'package:win32/win32.dart';
 
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
+import 'package:scn/services/remote_desktop/input_injector/service_input_bridge.dart';
 import 'package:scn/services/remote_desktop/input_injector/win_keymap.dart';
 import 'package:scn/utils/logger.dart';
 
 /// Windows-инжектор. Использует `SendInput` с абсолютными координатами
 /// в нормированной системе 0..65535, привязанной к виртуальному экрану,
 /// чтобы корректно работать с многомониторной конфигурацией.
+///
+/// В «привилегированном» режиме (для ввода в UAC/secure desktop) ввод
+/// маршрутизируется через [ServiceInputBridge] — именованный канал к
+/// SYSTEM-воркеру. Если канал недоступен, используется локальный SendInput
+/// с фолбэками (AttachThreadInput + PostMessage).
 class WindowsInputInjector implements InputInjector {
+  final ServiceInputBridge _bridge = ServiceInputBridge();
+  bool _privileged = false;
+
   @override
   bool get isAvailable => true;
+
+  /// Включить/выключить маршрутизацию ввода через привилегированный сервис.
+  /// Вызывается host-сервисом, когда активна сессия с правом управления и
+  /// включена опция «Allow remote UAC control».
+  void setPrivilegedMode(bool enabled) {
+    if (_privileged == enabled) return;
+    _privileged = enabled;
+    AppLogger.log('WindowsInputInjector: privileged mode=$enabled');
+    if (!enabled) {
+      _bridge.close();
+    }
+  }
 
   @override
   void setTargetSize(int width, int height) {
@@ -94,11 +115,11 @@ class WindowsInputInjector implements InputInjector {
         break;
     }
     if (x != null && y != null) {
-      // Сначала явно ставим курсор в точку, затем отдельным событием жмём
-      // кнопку. Некоторые приложения/заголовки окон хуже обрабатывают
-      // "move + button" в одном INPUT, особенно рядом с системными кнопками.
-      final point = _screenPoint(x, y);
-      SetCursorPos(point.$1, point.$2);
+      // Сначала позиционируем курсор отдельным абсолютным move-событием,
+      // затем жмём кнопку. Через привилегированный мост это критично: там
+      // SetCursorPos из нашего процесса не влияет на secure desktop, поэтому
+      // позиционируем именно событием MOUSEEVENTF_MOVE|ABSOLUTE.
+      _sendMouseAbsolute(x, y);
     }
     _sendOneMouseEvent(flags: flags, mouseData: data);
   }
@@ -168,6 +189,12 @@ class WindowsInputInjector implements InputInjector {
     if (WinKeymap.isExtendedKey(vk)) {
       flags |= KEYEVENTF_EXTENDEDKEY;
     }
+    // Привилегированный путь: SYSTEM-воркер сам переключается на нужный
+    // desktop и делает SendInput с System integrity — это работает и в UAC.
+    if (_privileged &&
+        _bridge.sendKeyboard(wVk: vk, wScan: scan, keyFlags: flags)) {
+      return;
+    }
     // Если foreground — elevated окно, перед SendInput цепляем нашу
     // input-очередь к его потоку. Иногда этого достаточно, чтобы пройти
     // фильтр UIPI для клавиатуры.
@@ -202,6 +229,12 @@ class WindowsInputInjector implements InputInjector {
   }
 
   void _sendUnicodeChar(int charCode, {required bool down}) {
+    if (_privileged &&
+        _bridge.sendKeyboard(
+            wScan: charCode,
+            keyFlags: KEYEVENTF_UNICODE | (down ? 0 : KEYEVENTF_KEYUP))) {
+      return;
+    }
     final elevatedHwnd = _elevatedForegroundHwnd();
     int? attachedTid;
     if (elevatedHwnd != null) {
@@ -423,6 +456,11 @@ class WindowsInputInjector implements InputInjector {
     int y = 0,
     int mouseData = 0,
   }) {
+    // Привилегированный путь через SYSTEM-воркер (работает на secure desktop).
+    if (_privileged &&
+        _bridge.sendMouse(flags: flags, mouseData: mouseData, dx: x, dy: y)) {
+      return;
+    }
     final pInputs = calloc<INPUT>();
     try {
       pInputs.ref.type = INPUT_MOUSE;
@@ -451,5 +489,7 @@ class WindowsInputInjector implements InputInjector {
   }
 
   @override
-  void dispose() {}
+  void dispose() {
+    _bridge.close();
+  }
 }
