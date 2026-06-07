@@ -385,7 +385,11 @@ function Build-Linux {
     $outDir = Join-Path $ReleasesDir "linux"
     New-Item -ItemType Directory -Path $outDir -Force -ErrorAction SilentlyContinue | Out-Null
     
-    $wslPath = ($ProjectDir -replace '\\', '/') -replace '^([A-Za-z]):', { '/mnt/' + $_.Groups[1].Value.ToLower() }
+    $wslPath = ($ProjectDir -replace '\\', '/')
+    if ($wslPath -match '^([A-Za-z]):') {
+        $drive = $Matches[1].ToLower()
+        $wslPath = '/mnt/' + $drive + ($wslPath.Substring(2))
+    }
     
     Write-Host "   WSL path: $wslPath" -ForegroundColor Gray
     
