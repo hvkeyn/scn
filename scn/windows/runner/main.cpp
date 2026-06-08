@@ -5,6 +5,7 @@
 #include "flutter_window.h"
 #include "rd_input_service.h"
 #include "utils.h"
+#include "win7_prereq.h"
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
@@ -16,6 +17,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     if (rd_service::HandleCommandLine(&rd_exit_code)) {
       return rd_exit_code;
     }
+  }
+
+  if (!win7_prereq::EnsurePrerequisites()) {
+    return EXIT_FAILURE;
   }
 
   // Attach to console when present (e.g., 'flutter run') or create a

@@ -11,6 +11,7 @@ add_executable(${BINARY_NAME} WIN32
   "main.cpp"
   "rd_input_service.cpp"
   "utils.cpp"
+  "win7_prereq.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
@@ -44,7 +45,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 # Remote-desktop privileged input service helper.
-target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib" "userenv.lib" "wtsapi32.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib" "userenv.lib" "wtsapi32.lib" "urlmon.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
