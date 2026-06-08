@@ -8,10 +8,24 @@
 #include "win7_crash_log.h"
 #include "win7_prereq.h"
 
+extern "C" void ScnWin7InstallGetProcAddressHook();
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   win7_crash_log::Install();
   win7_crash_log::Write(L"wWinMain start");
+  // Load shim before Flutter so GetProcAddress hook is active for engine init.
+  if (HMODULE ntdll_shim = LoadLibraryW(L"scn_ntdll.dll")) {
+    if (auto install = reinterpret_cast<void(*)()>(
+            GetProcAddress(ntdll_shim, "ScnWin7InstallGetProcAddressHook"))) {
+      install();
+      win7_crash_log::Write(L"scn_ntdll hook ok");
+    } else {
+      win7_crash_log::Write(L"scn_ntdll hook missing export");
+    }
+  } else {
+    win7_crash_log::Write(L"scn_ntdll load failed");
+  }
   // Remote-desktop privileged input helper. When launched with one of the
   // --rd-* switches the process acts as the input service/worker (or
   // installs/removes it) and never starts Flutter.

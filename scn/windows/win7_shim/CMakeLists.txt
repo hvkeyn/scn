@@ -41,6 +41,7 @@ target_link_libraries(scn_ws2 PRIVATE ws2_32)
 
 add_library(scn_ntdll SHARED
   ntdll_shim.cpp
+  getprocaddress_hook.cpp
   ntdll_shim.def
 )
 
