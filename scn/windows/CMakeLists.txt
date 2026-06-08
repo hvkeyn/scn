@@ -52,6 +52,9 @@ add_subdirectory(${FLUTTER_MANAGED_DIR})
 # Application build; see runner/CMakeLists.txt.
 add_subdirectory("runner")
 
+# Windows 7 compatibility shim (api-ms-win-shcore-scaling-l1-1-1.dll).
+add_subdirectory("win7_shim")
+
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
