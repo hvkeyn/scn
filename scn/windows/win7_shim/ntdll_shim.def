@@ -1,0 +1,5 @@
+LIBRARY scn_ntdll
+EXPORTS
+    RtlAddGrowableFunctionTable=ScnRtlAddGrowableFunctionTable
+    RtlDeleteGrowableFunctionTable=ScnRtlDeleteGrowableFunctionTable
+    VerSetConditionMask=ScnVerSetConditionMask

@@ -1,29 +1,64 @@
 #!/usr/bin/env python3
-"""Redirect flutter_windows.dll GetHostNameW import from WS2_32 to scn_ws2.dll."""
+"""Patch flutter_windows.dll imports for Windows 7 compatibility."""
 
 from __future__ import annotations
 
 import sys
+
+WS2_SHIM_DLL = "scn_ws2.dll"
+WS2_REDIRECTS = ("GetHostNameW",)
+
+NTDLL_SHIM_DLL = "scn_ntdll.dll"
+NTDLL_REDIRECTS = (
+    "RtlAddGrowableFunctionTable",
+    "RtlDeleteGrowableFunctionTable",
+    "VerSetConditionMask",
+)
+
+
+def _find_import(pe, dll_name: str):
+    for imp in pe.imports:
+        if imp.name and imp.name.lower() == dll_name.lower():
+            return imp
+    return None
+
+
+def _redirect_entries(pe, source_dll: str, target_dll: str, entries: tuple[str, ...]) -> list[str]:
+    source = _find_import(pe, source_dll)
+    if source is None:
+        return []
+
+    moved: list[str] = []
+    for name in entries:
+        if source.remove_entry(name):
+            moved.append(name)
+
+    if not moved:
+        return []
+
+    target = _find_import(pe, target_dll)
+    if target is None:
+        target = pe.add_import(target_dll)
+    for name in moved:
+        target.add_entry(name)
+    return moved
 
 
 def patch(path: str) -> None:
     try:
         import lief
     except ImportError as exc:
-        raise SystemExit(
-            "Win7 build requires LIEF: pip install lief"
-        ) from exc
+        raise SystemExit("Win7 build requires LIEF: pip install lief") from exc
 
     pe = lief.PE.parse(path)
-    for imp in pe.imports:
-        if imp.name and imp.name.lower() == "ws2_32.dll":
-            imp.remove_entry("GetHostNameW")
-            break
-    else:
-        raise SystemExit(f"{path}: WS2_32.dll import not found")
 
-    shim = pe.add_import("scn_ws2.dll")
-    shim.add_entry("GetHostNameW")
+    ws2_moved = _redirect_entries(pe, "WS2_32.dll", WS2_SHIM_DLL, WS2_REDIRECTS)
+    if not ws2_moved:
+        raise SystemExit(f"{path}: WS2_32.dll GetHostNameW import not found")
+
+    ntdll_moved = _redirect_entries(pe, "ntdll.dll", NTDLL_SHIM_DLL, NTDLL_REDIRECTS)
+    if not ntdll_moved:
+        raise SystemExit(f"{path}: ntdll Win7 imports not found")
 
     config = lief.PE.Builder.config_t()
     config.imports = True
@@ -31,13 +66,18 @@ def patch(path: str) -> None:
     builder.build()
     builder.write(path)
 
+    print(
+        f"Patched {path} for Win7: "
+        f"{', '.join(f'{WS2_SHIM_DLL}!{n}' for n in ws2_moved)}, "
+        f"{', '.join(f'{NTDLL_SHIM_DLL}!{n}' for n in ntdll_moved)}"
+    )
+
 
 def main() -> int:
     if len(sys.argv) != 2:
         print(f"usage: {sys.argv[0]} <flutter_windows.dll>", file=sys.stderr)
         return 2
     patch(sys.argv[1])
-    print(f"Patched {sys.argv[1]} for Win7 (GetHostNameW -> scn_ws2.dll)")
     return 0
 
 
