@@ -13,6 +13,7 @@ add_executable(${BINARY_NAME} WIN32
   "utils.cpp"
   "win7_prereq.cpp"
   "win7_crash_log.cpp"
+  "win7_env.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"

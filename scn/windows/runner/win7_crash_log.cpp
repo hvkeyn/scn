@@ -1,22 +1,13 @@
 #include "win7_crash_log.h"
 
+#include "win7_env.h"
+
 #include <windows.h>
 
 #include <stdio.h>
 
 namespace win7_crash_log {
 namespace {
-
-bool IsWindows7() {
-  OSVERSIONINFOEXW info = {};
-  info.dwOSVersionInfoSize = sizeof(info);
-  info.dwMajorVersion = 6;
-  info.dwMinorVersion = 1;
-  DWORDLONG mask = 0;
-  VER_SET_CONDITION(mask, VER_MAJORVERSION, VER_EQUAL);
-  VER_SET_CONDITION(mask, VER_MINORVERSION, VER_EQUAL);
-  return VerifyVersionInfoW(&info, VER_MAJORVERSION | VER_MINORVERSION, mask) != FALSE;
-}
 
 FILE* LogFile() {
   static FILE* file = nullptr;
@@ -65,7 +56,7 @@ LONG WINAPI UnhandledExceptionFilter(_EXCEPTION_POINTERS* info) {
 }  // namespace
 
 void Install() {
-  if (!IsWindows7()) {
+  if (!win7_env::IsWindows7()) {
     return;
   }
   SetUnhandledExceptionFilter(UnhandledExceptionFilter);
@@ -76,7 +67,7 @@ void Install() {
 }
 
 void Write(const wchar_t* message) {
-  if (!IsWindows7() || !message) {
+  if (!win7_env::IsWindows7() || !message) {
     return;
   }
   if (FILE* log = LogFile()) {
