@@ -84,6 +84,26 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+  install(CODE "
+    execute_process(
+      COMMAND \"${Python3_EXECUTABLE}\"
+              \"${CMAKE_CURRENT_SOURCE_DIR}/win7_shim/patch_flutter_win7.py\"
+              \"${CMAKE_INSTALL_PREFIX}/flutter_windows.dll\"
+      RESULT_VARIABLE _scn_win7_patch_result
+      OUTPUT_VARIABLE _scn_win7_patch_output
+      ERROR_VARIABLE _scn_win7_patch_error
+    )
+    if(NOT _scn_win7_patch_result EQUAL 0)
+      message(FATAL_ERROR
+        \"Win7 flutter patch failed: \${_scn_win7_patch_output}\${_scn_win7_patch_error}\")
+    endif()
+  " COMPONENT Runtime)
+else()
+  message(WARNING "Python3 not found; Win7 flutter import patch will be skipped")
+endif()
+
 if(PLUGIN_BUNDLED_LIBRARIES)
   install(FILES "${PLUGIN_BUNDLED_LIBRARIES}"
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"

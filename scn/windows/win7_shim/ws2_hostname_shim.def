@@ -1,0 +1,3 @@
+LIBRARY scn_ws2
+EXPORTS
+    GetHostNameW

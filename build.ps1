@@ -338,6 +338,7 @@ function Build-Windows {
     Push-Location $ScnDir
     
     Write-Host "   Building release..." -ForegroundColor Gray
+    python -m pip install lief -q 2>$null | Out-Null
     & $Flutter build windows --release
     if ($LASTEXITCODE -ne 0) {
         Write-Host "   [FAIL] Flutter Windows release build failed" -ForegroundColor Red
