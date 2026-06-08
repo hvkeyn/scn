@@ -1,0 +1,3 @@
+LIBRARY scn_d3d11
+EXPORTS
+    D3D11CreateDevice=ScnD3D11CreateDevice

@@ -44,6 +44,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
+target_link_libraries(${BINARY_NAME} PRIVATE scn_ntdll)
 target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
 # Remote-desktop privileged input service helper.
 target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib" "userenv.lib" "wtsapi32.lib" "urlmon.lib")

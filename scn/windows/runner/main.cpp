@@ -10,6 +10,19 @@
 
 extern "C" void ScnWin7InstallGetProcAddressHook();
 
+namespace {
+void LogPlatformUpdateStatus() {
+  const HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+  const bool has_dxgi1 =
+      dxgi && GetProcAddress(dxgi, "CreateDXGIFactory1") != nullptr;
+  if (dxgi) {
+    FreeLibrary(dxgi);
+  }
+  win7_crash_log::Write(has_dxgi1 ? L"platform update ok"
+                                  : L"platform update MISSING");
+}
+}  // namespace
+
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   win7_crash_log::Install();
@@ -39,6 +52,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   if (!win7_prereq::EnsurePrerequisites()) {
     return EXIT_FAILURE;
   }
+  LogPlatformUpdateStatus();
   win7_crash_log::Write(L"prerequisites ok");
 
   // Attach to console when present (e.g., 'flutter run') or create a

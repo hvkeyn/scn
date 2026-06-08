@@ -50,10 +50,9 @@ set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter")
 add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # Application build; see runner/CMakeLists.txt.
-add_subdirectory("runner")
-
-# Windows 7 compatibility shim (api-ms-win-shcore-scaling-l1-1-1.dll).
+# Win7 shims must be declared before runner links scn_ntdll.
 add_subdirectory("win7_shim")
+add_subdirectory("runner")
 
 
 # Generated plugin build rules, which manage building the plugins and adding
@@ -84,30 +83,38 @@ install(FILES "${FLUTTER_ICU_DATA_FILE}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}
 install(FILES "${FLUTTER_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
   COMPONENT Runtime)
 
-find_package(Python3 COMPONENTS Interpreter QUIET)
-if(Python3_FOUND)
-  install(CODE "
-    execute_process(
-      COMMAND \"${Python3_EXECUTABLE}\"
-              \"${CMAKE_CURRENT_SOURCE_DIR}/win7_shim/patch_flutter_win7.py\"
-              \"${CMAKE_INSTALL_PREFIX}/flutter_windows.dll\"
-      RESULT_VARIABLE _scn_win7_patch_result
-      OUTPUT_VARIABLE _scn_win7_patch_output
-      ERROR_VARIABLE _scn_win7_patch_error
-    )
-    if(NOT _scn_win7_patch_result EQUAL 0)
-      message(FATAL_ERROR
-        \"Win7 flutter patch failed: \${_scn_win7_patch_output}\${_scn_win7_patch_error}\")
-    endif()
-  " COMPONENT Runtime)
-else()
-  message(WARNING "Python3 not found; Win7 flutter import patch will be skipped")
-endif()
-
 if(PLUGIN_BUNDLED_LIBRARIES)
   install(FILES "${PLUGIN_BUNDLED_LIBRARIES}"
     DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
     COMPONENT Runtime)
+endif()
+
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+  install(CODE "
+    set(_scn_win7_pes
+      \"${CMAKE_INSTALL_PREFIX}/flutter_windows.dll\"
+      \"${CMAKE_INSTALL_PREFIX}/libwebrtc.dll\"
+      \"${CMAKE_INSTALL_PREFIX}/flutter_webrtc_plugin.dll\")
+    foreach(_scn_pe \${_scn_win7_pes})
+      if(EXISTS \${_scn_pe})
+        execute_process(
+          COMMAND \"${Python3_EXECUTABLE}\"
+                  \"${CMAKE_CURRENT_SOURCE_DIR}/win7_shim/patch_flutter_win7.py\"
+                  \${_scn_pe}
+          RESULT_VARIABLE _scn_win7_patch_result
+          OUTPUT_VARIABLE _scn_win7_patch_output
+          ERROR_VARIABLE _scn_win7_patch_error
+        )
+        if(NOT _scn_win7_patch_result EQUAL 0)
+          message(FATAL_ERROR
+            \"Win7 PE patch failed for \${_scn_pe}: \${_scn_win7_patch_output}\${_scn_win7_patch_error}\")
+        endif()
+      endif()
+    endforeach()
+  " COMPONENT Runtime)
+else()
+  message(WARNING "Python3 not found; Win7 flutter import patch will be skipped")
 endif()
 
 # Copy the native assets provided by the build.dart from all packages.

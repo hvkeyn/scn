@@ -10,6 +10,8 @@ constexpr NtStatus kStatusSuccess = 0x00000000L;
 constexpr NtStatus kStatusInvalidParameter = 0xC000000DL;
 
 using VerSetConditionMaskFn = ULONGLONG(WINAPI*)(ULONGLONG, DWORD, BYTE);
+using RtlAddFunctionTableFn = BOOLEAN(WINAPI*)(PRUNTIME_FUNCTION, DWORD, DWORD64);
+using RtlDeleteFunctionTableFn = BOOLEAN(WINAPI*)(PRUNTIME_FUNCTION);
 
 struct ScnDynamicFunctionTable {
   PRUNTIME_FUNCTION function_table;
@@ -28,17 +30,43 @@ VerSetConditionMaskFn RealVerSetConditionMask() {
   return fn;
 }
 
+RtlAddFunctionTableFn RealRtlAddFunctionTable() {
+  static RtlAddFunctionTableFn fn = reinterpret_cast<RtlAddFunctionTableFn>(
+      GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlAddFunctionTable"));
+  return fn;
+}
+
+RtlDeleteFunctionTableFn RealRtlDeleteFunctionTable() {
+  static RtlDeleteFunctionTableFn fn = reinterpret_cast<RtlDeleteFunctionTableFn>(
+      GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "RtlDeleteFunctionTable"));
+  return fn;
+}
+
 extern "C" void ScnWin7InstallGetProcAddressHook();
 
 bool RegisterTable(ScnDynamicFunctionTable* table) {
-  // Win7: do not register with RtlAddFunctionTable — Flutter's growable
-  // tables are managed by our shim; bad unwind metadata can crash ntdll.
-  (void)table;
-  return true;
+  if (!table || table->registered || table->entry_count == 0 ||
+      !table->function_table) {
+    return true;
+  }
+  const RtlAddFunctionTableFn rtl_add = RealRtlAddFunctionTable();
+  if (!rtl_add) {
+    return false;
+  }
+  table->registered =
+      rtl_add(table->function_table, table->entry_count, table->range_base) != FALSE;
+  return table->registered;
 }
 
 void UnregisterTable(ScnDynamicFunctionTable* table) {
-  (void)table;
+  if (!table || !table->registered || !table->function_table) {
+    return;
+  }
+  const RtlDeleteFunctionTableFn rtl_del = RealRtlDeleteFunctionTable();
+  if (rtl_del) {
+    rtl_del(table->function_table);
+  }
+  table->registered = false;
 }
 
 }  // namespace

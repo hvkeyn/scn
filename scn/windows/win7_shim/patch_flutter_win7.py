@@ -13,6 +13,7 @@ PATCHES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
         (
             "RtlAddGrowableFunctionTable",
             "RtlDeleteGrowableFunctionTable",
+            "RtlGrowFunctionTable",
             "VerSetConditionMask",
         ),
     ),
@@ -24,6 +25,24 @@ PATCHES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
             "LCMapStringEx",
             "GetFileInformationByHandleEx",
         ),
+    ),
+    (
+        "KERNEL32.dll",
+        "scn_ntdll.dll",
+        ("VerSetConditionMask",),
+    ),
+    (
+        "dxgi.dll",
+        "scn_dxgi.dll",
+        (
+            "CreateDXGIFactory1",
+            "CreateDXGIFactory",
+        ),
+    ),
+    (
+        "d3d11.dll",
+        "scn_d3d11.dll",
+        ("D3D11CreateDevice",),
     ),
 )
 
@@ -71,7 +90,8 @@ def patch_file(path: str) -> None:
             summary.append(f"{target_dll}!{name}")
 
     if not summary:
-        raise SystemExit(f"{path}: no Win7 imports redirected")
+        print(f"{path}: no Win7 imports redirected (skipped)")
+        return
 
     config = lief.PE.Builder.config_t()
     config.imports = True
