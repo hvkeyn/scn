@@ -4,6 +4,7 @@
 #include <flutter_windows.h>
 
 #include "resource.h"
+#include "win7_crash_log.h"
 
 namespace {
 
@@ -124,6 +125,7 @@ bool Win32Window::Create(const std::wstring& title,
                          const Point& origin,
                          const Size& size) {
   Destroy();
+  win7_crash_log::Write(L"Win32Window::Create start");
 
   const wchar_t* window_class =
       WindowClassRegistrar::GetInstance()->GetWindowClass();
@@ -131,7 +133,9 @@ bool Win32Window::Create(const std::wstring& title,
   const POINT target_point = {static_cast<LONG>(origin.x),
                               static_cast<LONG>(origin.y)};
   HMONITOR monitor = MonitorFromPoint(target_point, MONITOR_DEFAULTTONEAREST);
+  win7_crash_log::Write(L"MonitorFromPoint ok");
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
+  win7_crash_log::Write(L"FlutterDesktopGetDpiForMonitor ok");
   double scale_factor = dpi / 96.0;
 
   HWND window = CreateWindow(
@@ -141,10 +145,13 @@ bool Win32Window::Create(const std::wstring& title,
       nullptr, nullptr, GetModuleHandle(nullptr), this);
 
   if (!window) {
+    win7_crash_log::Write(L"CreateWindow failed");
     return false;
   }
+  win7_crash_log::Write(L"CreateWindow ok");
 
   UpdateTheme(window);
+  win7_crash_log::Write(L"UpdateTheme ok");
 
   return OnCreate();
 }
