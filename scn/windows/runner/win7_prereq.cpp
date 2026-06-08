@@ -168,6 +168,47 @@ bool InstallUcrt(const std::wstring& dir) {
   return code == 0 || code == 3010;  // success or reboot required
 }
 
+constexpr wchar_t kPlatformUpdatePage[] =
+    L"https://www.microsoft.com/download/details.aspx?id=36805";
+
+bool HasPlatformUpdate() {
+  const HMODULE dxgi = LoadLibraryW(L"dxgi.dll");
+  if (!dxgi) {
+    return false;
+  }
+  const bool has_dxgi1 =
+      GetProcAddress(dxgi, "CreateDXGIFactory1") != nullptr;
+  FreeLibrary(dxgi);
+  if (!has_dxgi1) {
+    return false;
+  }
+
+  const HMODULE d3d11 = LoadLibraryW(L"d3d11.dll");
+  if (!d3d11) {
+    return false;
+  }
+  const bool has_d3d11 = GetProcAddress(d3d11, "D3D11CreateDevice") != nullptr;
+  FreeLibrary(d3d11);
+  return has_d3d11;
+}
+
+void WarnPlatformUpdateIfNeeded() {
+  if (HasPlatformUpdate()) {
+    return;
+  }
+  const int choice = MessageBoxW(
+      nullptr,
+      L"На Windows 7 для SCN нужен Platform Update (KB2670838) — "
+      L"DirectX/DXGI 1.1 и D3D11.\n\n"
+      L"Без него приложение может падать при запуске.\n\n"
+      L"Открыть страницу загрузки Microsoft?",
+      L"SCN — Platform Update",
+      MB_YESNO | MB_ICONWARNING | MB_TASKMODAL | MB_SETFOREGROUND);
+  if (choice == IDYES) {
+    OpenUrl(kPlatformUpdatePage);
+  }
+}
+
 bool InstallVcRedist(const std::wstring& dir) {
   const std::wstring exe_path = dir + L"vc_redist.x64.exe";
   if (!DownloadToFile(kVcRedistUrl, exe_path)) {
@@ -195,6 +236,7 @@ bool EnsurePrerequisites() {
   const bool need_ucrt = !IsUcrtInstalled();
   const bool need_vc = !IsVcRedistInstalled();
   if (!need_ucrt && !need_vc) {
+    WarnPlatformUpdateIfNeeded();
     return true;
   }
 
@@ -208,6 +250,7 @@ bool EnsurePrerequisites() {
         L"SCN запускается без установки компонентов. "
         L"При ошибках DLL установите KB2999226 и VC++ Redistributable вручную.",
         L"SCN", MB_OK | MB_ICONWARNING | MB_TASKMODAL);
+    WarnPlatformUpdateIfNeeded();
     return true;
   }
 
@@ -239,6 +282,7 @@ bool EnsurePrerequisites() {
         OpenUrl(kVcRedistDownloadPage);
       }
     }
+    WarnPlatformUpdateIfNeeded();
     return true;  // let user try to run anyway after manual install
   }
 
@@ -246,6 +290,7 @@ bool EnsurePrerequisites() {
               L"Компоненты установлены. Если Windows запросит перезагрузку — "
               L"выполните её и снова запустите SCN.",
               L"SCN", MB_OK | MB_ICONINFORMATION | MB_TASKMODAL);
+  WarnPlatformUpdateIfNeeded();
   return true;
 }
 

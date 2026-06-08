@@ -51,6 +51,18 @@ set_target_properties(scn_ntdll PROPERTIES
 
 target_compile_definitions(scn_ntdll PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 
-install(TARGETS shcore_scaling_shim core_path_shim scn_ws2 scn_ntdll
+add_library(scn_kernel32 SHARED
+  kernel32_shim.cpp
+  kernel32_shim.def
+)
+
+set_target_properties(scn_kernel32 PROPERTIES
+  OUTPUT_NAME "scn_kernel32"
+  PREFIX ""
+)
+
+target_compile_definitions(scn_kernel32 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
+
+install(TARGETS shcore_scaling_shim core_path_shim scn_ws2 scn_ntdll scn_kernel32
   RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)

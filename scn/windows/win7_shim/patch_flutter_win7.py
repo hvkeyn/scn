@@ -1,18 +1,30 @@
 #!/usr/bin/env python3
-"""Patch flutter_windows.dll imports for Windows 7 compatibility."""
+"""Patch PE imports for Windows 7 compatibility."""
 
 from __future__ import annotations
 
 import sys
 
-WS2_SHIM_DLL = "scn_ws2.dll"
-WS2_REDIRECTS = ("GetHostNameW",)
-
-NTDLL_SHIM_DLL = "scn_ntdll.dll"
-NTDLL_REDIRECTS = (
-    "RtlAddGrowableFunctionTable",
-    "RtlDeleteGrowableFunctionTable",
-    "VerSetConditionMask",
+PATCHES: tuple[tuple[str, str, tuple[str, ...]], ...] = (
+    ("WS2_32.dll", "scn_ws2.dll", ("GetHostNameW",)),
+    (
+        "ntdll.dll",
+        "scn_ntdll.dll",
+        (
+            "RtlAddGrowableFunctionTable",
+            "RtlDeleteGrowableFunctionTable",
+            "VerSetConditionMask",
+        ),
+    ),
+    (
+        "KERNEL32.dll",
+        "scn_kernel32.dll",
+        (
+            "CompareStringEx",
+            "LCMapStringEx",
+            "GetFileInformationByHandleEx",
+        ),
+    ),
 )
 
 
@@ -44,40 +56,37 @@ def _redirect_entries(pe, source_dll: str, target_dll: str, entries: tuple[str, 
     return moved
 
 
-def patch(path: str) -> None:
+def patch_file(path: str) -> None:
     try:
         import lief
     except ImportError as exc:
         raise SystemExit("Win7 build requires LIEF: pip install lief") from exc
 
     pe = lief.PE.parse(path)
+    summary: list[str] = []
 
-    ws2_moved = _redirect_entries(pe, "WS2_32.dll", WS2_SHIM_DLL, WS2_REDIRECTS)
-    if not ws2_moved:
-        raise SystemExit(f"{path}: WS2_32.dll GetHostNameW import not found")
+    for source_dll, target_dll, entries in PATCHES:
+        moved = _redirect_entries(pe, source_dll, target_dll, entries)
+        for name in moved:
+            summary.append(f"{target_dll}!{name}")
 
-    ntdll_moved = _redirect_entries(pe, "ntdll.dll", NTDLL_SHIM_DLL, NTDLL_REDIRECTS)
-    if not ntdll_moved:
-        raise SystemExit(f"{path}: ntdll Win7 imports not found")
+    if not summary:
+        raise SystemExit(f"{path}: no Win7 imports redirected")
 
     config = lief.PE.Builder.config_t()
     config.imports = True
     builder = lief.PE.Builder(pe, config)
     builder.build()
     builder.write(path)
-
-    print(
-        f"Patched {path} for Win7: "
-        f"{', '.join(f'{WS2_SHIM_DLL}!{n}' for n in ws2_moved)}, "
-        f"{', '.join(f'{NTDLL_SHIM_DLL}!{n}' for n in ntdll_moved)}"
-    )
+    print(f"Patched {path}: {', '.join(summary)}")
 
 
 def main() -> int:
-    if len(sys.argv) != 2:
-        print(f"usage: {sys.argv[0]} <flutter_windows.dll>", file=sys.stderr)
+    if len(sys.argv) < 2:
+        print(f"usage: {sys.argv[0]} <pe-file> [<pe-file> ...]", file=sys.stderr)
         return 2
-    patch(sys.argv[1])
+    for path in sys.argv[1:]:
+        patch_file(path)
     return 0
 
 
