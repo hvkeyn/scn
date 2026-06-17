@@ -313,6 +313,37 @@ function Update-Version {
     }
 }
 
+# Win7 PE import patch (CMake install step) needs Python + lief.
+function Ensure-Win7PatchDeps {
+    $python = Get-Command python -ErrorAction SilentlyContinue
+    if (-not $python) {
+        Write-Host "   [WARN] Python not found; Win7 PE patch may fail at install" -ForegroundColor Yellow
+        Write-Host "   Install Python 3 and run: pip install lief" -ForegroundColor Gray
+        return $false
+    }
+
+    & python -c "import lief" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        return $true
+    }
+
+    Write-Host "   Installing lief for Win7 PE patch..." -ForegroundColor Gray
+    & python -m pip install lief
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "   [FAIL] pip install lief failed" -ForegroundColor Red
+        return $false
+    }
+
+    & python -c "import lief" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "   [FAIL] lief is not importable after install" -ForegroundColor Red
+        return $false
+    }
+
+    Write-Host "   [OK] lief ready" -ForegroundColor Green
+    return $true
+}
+
 # Build Windows
 function Build-Windows {
     param([string]$Flutter)
@@ -336,6 +367,11 @@ function Build-Windows {
         return $false
     }
     Push-Location $ScnDir
+
+    if (-not (Ensure-Win7PatchDeps)) {
+        Pop-Location
+        return $false
+    }
     
     Write-Host "   Building release..." -ForegroundColor Gray
     & $Flutter build windows --release

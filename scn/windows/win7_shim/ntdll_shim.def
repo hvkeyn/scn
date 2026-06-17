@@ -1,0 +1,7 @@
+LIBRARY scn_ntdll
+EXPORTS
+    RtlAddGrowableFunctionTable=ScnRtlAddGrowableFunctionTable
+    RtlDeleteGrowableFunctionTable=ScnRtlDeleteGrowableFunctionTable
+    RtlGrowFunctionTable=ScnRtlGrowFunctionTable
+    VerSetConditionMask=ScnVerSetConditionMask
+    ScnWin7InstallGetProcAddressHook

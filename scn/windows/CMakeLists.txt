@@ -50,6 +50,8 @@ set(FLUTTER_MANAGED_DIR "${CMAKE_CURRENT_SOURCE_DIR}/flutter")
 add_subdirectory(${FLUTTER_MANAGED_DIR})
 
 # Application build; see runner/CMakeLists.txt.
+# Win7 shims must be declared before runner links scn_ntdll.
+add_subdirectory("win7_shim")
 add_subdirectory("runner")
 
 
@@ -87,6 +89,34 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_FOUND)
+  install(CODE "
+    set(_scn_win7_pes
+      \"${CMAKE_INSTALL_PREFIX}/flutter_windows.dll\"
+      \"${CMAKE_INSTALL_PREFIX}/libwebrtc.dll\"
+      \"${CMAKE_INSTALL_PREFIX}/flutter_webrtc_plugin.dll\")
+    foreach(_scn_pe \${_scn_win7_pes})
+      if(EXISTS \${_scn_pe})
+        execute_process(
+          COMMAND \"${Python3_EXECUTABLE}\"
+                  \"${CMAKE_CURRENT_SOURCE_DIR}/win7_shim/patch_flutter_win7.py\"
+                  \${_scn_pe}
+          RESULT_VARIABLE _scn_win7_patch_result
+          OUTPUT_VARIABLE _scn_win7_patch_output
+          ERROR_VARIABLE _scn_win7_patch_error
+        )
+        if(NOT _scn_win7_patch_result EQUAL 0)
+          message(FATAL_ERROR
+            \"Win7 PE patch failed for \${_scn_pe}: \${_scn_win7_patch_output}\${_scn_win7_patch_error}\")
+        endif()
+      endif()
+    endforeach()
+  " COMPONENT Runtime)
+else()
+  message(WARNING "Python3 not found; Win7 flutter import patch will be skipped")
+endif()
+
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
 install(DIRECTORY "${NATIVE_ASSETS_DIR}"
@@ -106,3 +136,8 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+install(CODE "
+  file(WRITE \"${CMAKE_INSTALL_PREFIX}/WIN7_BUILD.txt\"
+       \"build=${FLUTTER_VERSION_BUILD}\\n\")
+" COMPONENT Runtime)

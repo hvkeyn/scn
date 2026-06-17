@@ -3,6 +3,8 @@
 #include <optional>
 
 #include "flutter/generated_plugin_registrant.h"
+#include "win7_crash_log.h"
+#include "flutter/flutter_engine.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -10,16 +12,23 @@ FlutterWindow::FlutterWindow(const flutter::DartProject& project)
 FlutterWindow::~FlutterWindow() {}
 
 bool FlutterWindow::OnCreate() {
+  win7_crash_log::Write(L"FlutterWindow::OnCreate start");
   if (!Win32Window::OnCreate()) {
+    win7_crash_log::Write(L"Win32Window::OnCreate failed");
     return false;
   }
 
   RECT frame = GetClientArea();
+  win7_crash_log::Write(L"FlutterEngine probe begin");
+  {
+    flutter::FlutterEngine engine_probe(project_);
+    win7_crash_log::Write(L"FlutterEngine probe ok");
+  }
+  win7_crash_log::Write(L"creating FlutterViewController");
 
-  // The size here must match the window dimensions to avoid unnecessary surface
-  // creation / destruction in the startup path.
   flutter_controller_ = std::make_unique<flutter::FlutterViewController>(
       frame.right - frame.left, frame.bottom - frame.top, project_);
+  win7_crash_log::Write(L"FlutterViewController created");
   // Ensure that basic setup of the controller was successful.
   if (!flutter_controller_->engine() || !flutter_controller_->view()) {
     return false;
