@@ -4,4 +4,3 @@ EXPORTS
     RtlDeleteGrowableFunctionTable=ScnRtlDeleteGrowableFunctionTable
     RtlGrowFunctionTable=ScnRtlGrowFunctionTable
     VerSetConditionMask=ScnVerSetConditionMask
-    ScnWin7InstallGetProcAddressHook

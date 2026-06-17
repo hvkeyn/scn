@@ -4,7 +4,6 @@
 
 #include "flutter/generated_plugin_registrant.h"
 #include "win7_crash_log.h"
-#include "flutter/flutter_engine.h"
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -19,11 +18,6 @@ bool FlutterWindow::OnCreate() {
   }
 
   RECT frame = GetClientArea();
-  win7_crash_log::Write(L"FlutterEngine probe begin");
-  {
-    flutter::FlutterEngine engine_probe(project_);
-    win7_crash_log::Write(L"FlutterEngine probe ok");
-  }
   win7_crash_log::Write(L"creating FlutterViewController");
 
   flutter_controller_ = std::make_unique<flutter::FlutterViewController>(

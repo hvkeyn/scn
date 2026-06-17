@@ -3,8 +3,6 @@
 #include <windows.h>
 #include <winnt.h>
 
-#include <cstring>
-
 using NtStatus = LONG;
 constexpr NtStatus kStatusSuccess = 0x00000000L;
 constexpr NtStatus kStatusInvalidParameter = 0xC000000DL;
@@ -14,7 +12,7 @@ using RtlAddFunctionTableFn = BOOLEAN(WINAPI*)(PRUNTIME_FUNCTION, DWORD, DWORD64
 using RtlDeleteFunctionTableFn = BOOLEAN(WINAPI*)(PRUNTIME_FUNCTION);
 
 struct ScnDynamicFunctionTable {
-  PRUNTIME_FUNCTION function_table;
+  PRUNTIME_FUNCTION client_table;
   DWORD entry_count;
   DWORD maximum_size;
   ULONG_PTR range_base;
@@ -44,7 +42,7 @@ RtlDeleteFunctionTableFn RealRtlDeleteFunctionTable() {
 
 bool RegisterTable(ScnDynamicFunctionTable* table) {
   if (!table || table->registered || table->entry_count == 0 ||
-      !table->function_table) {
+      !table->client_table) {
     return true;
   }
   const RtlAddFunctionTableFn rtl_add = RealRtlAddFunctionTable();
@@ -52,17 +50,17 @@ bool RegisterTable(ScnDynamicFunctionTable* table) {
     return false;
   }
   table->registered =
-      rtl_add(table->function_table, table->entry_count, table->range_base) != FALSE;
+      rtl_add(table->client_table, table->entry_count, table->range_base) != FALSE;
   return table->registered;
 }
 
 void UnregisterTable(ScnDynamicFunctionTable* table) {
-  if (!table || !table->registered || !table->function_table) {
+  if (!table || !table->registered || !table->client_table) {
     return;
   }
   const RtlDeleteFunctionTableFn rtl_del = RealRtlDeleteFunctionTable();
   if (rtl_del) {
-    rtl_del(table->function_table);
+    rtl_del(table->client_table);
   }
   table->registered = false;
 }
@@ -89,16 +87,7 @@ NtStatus WINAPI ScnRtlAddGrowableFunctionTable(
     return kStatusInvalidParameter;
   }
 
-  const SIZE_T bytes = static_cast<SIZE_T>(maximum_size) * sizeof(RUNTIME_FUNCTION);
-  table->function_table = static_cast<PRUNTIME_FUNCTION>(
-      HeapAlloc(GetProcessHeap(), 0, bytes));
-  if (!table->function_table) {
-    HeapFree(GetProcessHeap(), 0, table);
-    return kStatusInvalidParameter;
-  }
-
-  std::memcpy(table->function_table, function_table,
-              static_cast<SIZE_T>(entry_count) * sizeof(RUNTIME_FUNCTION));
+  table->client_table = function_table;
   table->entry_count = entry_count;
   table->maximum_size = maximum_size;
   table->range_base = range_base;
@@ -116,9 +105,6 @@ NtStatus WINAPI ScnRtlDeleteGrowableFunctionTable(PVOID dynamic_table) {
 
   auto* table = static_cast<ScnDynamicFunctionTable*>(dynamic_table);
   UnregisterTable(table);
-  if (table->function_table) {
-    HeapFree(GetProcessHeap(), 0, table->function_table);
-  }
   HeapFree(GetProcessHeap(), 0, table);
   return kStatusSuccess;
 }
@@ -154,8 +140,6 @@ ULONGLONG WINAPI ScnVerSetConditionMask(ULONGLONG condition_mask,
 BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID /*reserved*/) {
   if (reason == DLL_PROCESS_ATTACH) {
     DisableThreadLibraryCalls(instance);
-    // GetProcAddress hook is installed from wWinMain after logging starts.
-    // Installing it here crashes Win7 during the loader lock.
   }
   return TRUE;
 }

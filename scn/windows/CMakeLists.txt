@@ -40,7 +40,7 @@ add_definitions(-DUNICODE -D_UNICODE)
 function(APPLY_STANDARD_SETTINGS TARGET)
   target_compile_features(${TARGET} PUBLIC cxx_std_17)
   target_compile_options(${TARGET} PRIVATE /W4 /WX /wd"4100")
-  target_compile_options(${TARGET} PRIVATE /EHsc)
+  target_compile_options(${TARGET} PRIVATE /EHsc /utf-8)
   target_compile_definitions(${TARGET} PRIVATE "_HAS_EXCEPTIONS=0")
   target_compile_definitions(${TARGET} PRIVATE "$<$<CONFIG:Debug>:_DEBUG>")
 endfunction()
@@ -59,6 +59,14 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Win7: defer Flutter engine/plugins until runtime IAT redirection runs in wWinMain.
+set(WIN7_DELAYLOAD_DLLS "flutter_windows.dll")
+foreach(plugin ${FLUTTER_PLUGIN_LIST})
+  list(APPEND WIN7_DELAYLOAD_DLLS "${plugin}_plugin.dll")
+endforeach()
+foreach(dll ${WIN7_DELAYLOAD_DLLS})
+  target_link_options(${BINARY_NAME} PRIVATE "/DELAYLOAD:${dll}")
+endforeach()
 
 # === Installation ===
 # Support files are copied into place next to the executable, so that it can
@@ -89,39 +97,14 @@ if(PLUGIN_BUNDLED_LIBRARIES)
     COMPONENT Runtime)
 endif()
 
-find_package(Python3 COMPONENTS Interpreter QUIET)
-if(Python3_FOUND)
-  install(CODE "
-    set(_scn_win7_pes
-      \"${CMAKE_INSTALL_PREFIX}/flutter_windows.dll\"
-      \"${CMAKE_INSTALL_PREFIX}/libwebrtc.dll\"
-      \"${CMAKE_INSTALL_PREFIX}/flutter_webrtc_plugin.dll\")
-    foreach(_scn_pe \${_scn_win7_pes})
-      if(EXISTS \${_scn_pe})
-        execute_process(
-          COMMAND \"${Python3_EXECUTABLE}\"
-                  \"${CMAKE_CURRENT_SOURCE_DIR}/win7_shim/patch_flutter_win7.py\"
-                  \${_scn_pe}
-          RESULT_VARIABLE _scn_win7_patch_result
-          OUTPUT_VARIABLE _scn_win7_patch_output
-          ERROR_VARIABLE _scn_win7_patch_error
-        )
-        if(NOT _scn_win7_patch_result EQUAL 0)
-          message(FATAL_ERROR
-            \"Win7 PE patch failed for \${_scn_pe}: \${_scn_win7_patch_output}\${_scn_win7_patch_error}\")
-        endif()
-      endif()
-    endforeach()
-  " COMPONENT Runtime)
-else()
-  message(WARNING "Python3 not found; Win7 flutter import patch will be skipped")
-endif()
-
 # Copy the native assets provided by the build.dart from all packages.
 set(NATIVE_ASSETS_DIR "${PROJECT_BUILD_DIR}native_assets/windows/")
-install(DIRECTORY "${NATIVE_ASSETS_DIR}"
-   DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
-   COMPONENT Runtime)
+install(CODE "
+  if(EXISTS \"${NATIVE_ASSETS_DIR}\")
+    file(INSTALL DESTINATION \"${INSTALL_BUNDLE_LIB_DIR}\"
+         TYPE DIRECTORY FILES \"${NATIVE_ASSETS_DIR}\")
+  endif()
+" COMPONENT Runtime)
 
 # Fully re-copy the assets directory on each build to avoid having stale files
 # from a previous install.
@@ -136,6 +119,8 @@ install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
 install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
+
+# Win7 import redirection: /DELAYLOAD + runtime IAT patch (win7_iat_patch.cpp).
 
 install(CODE "
   file(WRITE \"${CMAKE_INSTALL_PREFIX}/WIN7_BUILD.txt\"

@@ -313,34 +313,8 @@ function Update-Version {
     }
 }
 
-# Win7 PE import patch (CMake install step) needs Python + lief.
+# Win7 support uses runtime IAT patching (no LIEF needed at build time).
 function Ensure-Win7PatchDeps {
-    $python = Get-Command python -ErrorAction SilentlyContinue
-    if (-not $python) {
-        Write-Host "   [WARN] Python not found; Win7 PE patch may fail at install" -ForegroundColor Yellow
-        Write-Host "   Install Python 3 and run: pip install lief" -ForegroundColor Gray
-        return $false
-    }
-
-    & python -c "import lief" 2>$null
-    if ($LASTEXITCODE -eq 0) {
-        return $true
-    }
-
-    Write-Host "   Installing lief for Win7 PE patch..." -ForegroundColor Gray
-    & python -m pip install lief
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "   [FAIL] pip install lief failed" -ForegroundColor Red
-        return $false
-    }
-
-    & python -c "import lief" 2>$null
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host "   [FAIL] lief is not importable after install" -ForegroundColor Red
-        return $false
-    }
-
-    Write-Host "   [OK] lief ready" -ForegroundColor Green
     return $true
 }
 
@@ -368,28 +342,41 @@ function Build-Windows {
     }
     Push-Location $ScnDir
 
+    if (-not (Stop-SCNProcesses)) {
+        Pop-Location
+        return $false
+    }
+
     if (-not (Ensure-Win7PatchDeps)) {
         Pop-Location
         return $false
     }
     
     Write-Host "   Building release..." -ForegroundColor Gray
-    & $Flutter build windows --release
-    if ($LASTEXITCODE -ne 0) {
+    & $Flutter build windows --release 2>&1 | ForEach-Object { Write-Host $_ }
+    $flutterExit = $LASTEXITCODE
+
+    $releaseDir = Join-Path $ScnDir "build\windows\x64\runner\Release"
+    $exe = Join-Path $releaseDir "scn.exe"
+    $win7Marker = Join-Path $releaseDir "WIN7_BUILD.txt"
+
+    if ($flutterExit -ne 0 -or -not (Test-Path $exe) -or -not (Test-Path $win7Marker)) {
         Write-Host "   [FAIL] Flutter Windows release build failed" -ForegroundColor Red
+        if ($flutterExit -eq 0) {
+            Write-Host "   INSTALL step likely failed (close scn.exe / run terminal as admin)" -ForegroundColor Yellow
+            Write-Host "   Expected marker: $win7Marker" -ForegroundColor Gray
+        }
         Pop-Location
         return $false
     }
     
-    $exe = Join-Path $ScnDir "build\windows\x64\runner\Release\scn.exe"
     if (Test-Path $exe) {
         if (-not (Stop-SCNProcesses)) {
             Pop-Location
             return $false
         }
 
-        $releaseSource = Join-Path $ScnDir "build\windows\x64\runner\Release"
-        if (-not (Copy-ReleaseDirectory -SourceDir $releaseSource -OutDir $outDir)) {
+        if (-not (Copy-ReleaseDirectory -SourceDir $releaseDir -OutDir $outDir)) {
             Pop-Location
             return $false
         }
@@ -586,7 +573,7 @@ Write-Host "======================================" -ForegroundColor Yellow
 
 $allOk = $true
 foreach ($p in $results.Keys) {
-    if ($results[$p]) {
+    if ($results[$p] -eq $true) {
         Write-Host "   [OK] $p" -ForegroundColor Green
     } else {
         Write-Host "   [FAIL] $p" -ForegroundColor Red

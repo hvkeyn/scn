@@ -1,5 +1,6 @@
 cmake_minimum_required(VERSION 3.14)
-project(win7_shim LANGUAGES CXX)
+# Do not call project() here: nested project() resets CMAKE_INSTALL_PREFIX
+# to "C:/Program Files/..." and INSTALL copies shims to the wrong folder.
 
 add_library(shcore_scaling_shim SHARED
   shcore_scaling_shim.cpp
@@ -41,7 +42,6 @@ target_link_libraries(scn_ws2 PRIVATE ws2_32)
 
 add_library(scn_ntdll SHARED
   ntdll_shim.cpp
-  getprocaddress_hook.cpp
   ntdll_shim.def
 )
 
@@ -91,5 +91,5 @@ target_compile_definitions(scn_d3d11 PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX)
 target_link_libraries(scn_d3d11 PRIVATE d3d11)
 
 install(TARGETS shcore_scaling_shim core_path_shim scn_ws2 scn_ntdll scn_kernel32 scn_dxgi scn_d3d11
-  RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
+  RUNTIME DESTINATION "$<TARGET_FILE_DIR:scn>"
   COMPONENT Runtime)

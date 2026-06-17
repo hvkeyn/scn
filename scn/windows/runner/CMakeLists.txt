@@ -14,6 +14,8 @@ add_executable(${BINARY_NAME} WIN32
   "win7_prereq.cpp"
   "win7_crash_log.cpp"
   "win7_env.cpp"
+  "win7_iat_patch.cpp"
+  "win7_delayload.cpp"
   "win32_window.cpp"
   "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
   "Runner.rc"
@@ -45,7 +47,7 @@ target_compile_definitions(${BINARY_NAME} PRIVATE "NOMINMAX")
 # Add dependency libraries and include directories. Add any application-specific
 # dependencies here.
 target_link_libraries(${BINARY_NAME} PRIVATE flutter flutter_wrapper_app)
-target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib" "delayimp.lib")
 # Deploy scn_ntdll.dll next to scn.exe but load it from wWinMain (not at process start).
 add_dependencies(${BINARY_NAME} scn_ntdll)
 # Remote-desktop privileged input service helper.

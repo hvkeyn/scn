@@ -7,9 +7,8 @@
 #include "utils.h"
 #include "win7_crash_log.h"
 #include "win7_env.h"
+#include "win7_iat_patch.h"
 #include "win7_prereq.h"
-
-extern "C" void ScnWin7InstallGetProcAddressHook();
 
 namespace {
 
@@ -60,6 +59,29 @@ void LogPlatformUpdateStatus() {
   win7_crash_log::Write(has_dxgi1 ? L"platform update ok"
                                   : L"platform update MISSING");
 }
+
+void PreloadWin7Shims() {
+  static const wchar_t* kShims[] = {
+      L"scn_ntdll.dll",
+      L"scn_kernel32.dll",
+      L"scn_ws2.dll",
+      L"scn_dxgi.dll",
+      L"scn_d3d11.dll",
+  };
+
+  for (const wchar_t* shim : kShims) {
+    if (LoadLibraryW(shim)) {
+      wchar_t msg[128] = {};
+      wsprintfW(msg, L"%s preload ok", shim);
+      win7_crash_log::Write(msg);
+      continue;
+    }
+    wchar_t err[128] = {};
+    wsprintfW(err, L"%s preload failed err=%lu", shim, GetLastError());
+    win7_crash_log::Write(err);
+  }
+}
+
 }  // namespace
 
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
@@ -69,35 +91,40 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   win7_crash_log::Write(L"wWinMain start");
   LogExecutableInfo();
   ShowBuildBannerIfWin7();
-  // Load shim before Flutter so GetProcAddress hook is active for engine init.
-  if (HMODULE ntdll_shim = LoadLibraryW(L"scn_ntdll.dll")) {
-    if (auto install = reinterpret_cast<void(*)()>(
-            GetProcAddress(ntdll_shim, "ScnWin7InstallGetProcAddressHook"))) {
-      install();
-      win7_crash_log::Write(L"scn_ntdll hook ok");
-    } else {
-      win7_crash_log::Write(L"scn_ntdll hook missing export");
-    }
-  } else {
-    wchar_t err[96] = {};
-    wsprintfW(err, L"scn_ntdll load failed err=%lu", GetLastError());
-    win7_crash_log::Write(err);
-  }
+
   // Remote-desktop privileged input helper. When launched with one of the
   // --rd-* switches the process acts as the input service/worker (or
   // installs/removes it) and never starts Flutter.
+  win7_crash_log::Write(L"rd_service check");
   {
     int rd_exit_code = 0;
     if (rd_service::HandleCommandLine(&rd_exit_code)) {
+      win7_crash_log::Write(L"rd_service handled");
       return rd_exit_code;
     }
   }
+  win7_crash_log::Write(L"rd_service skip");
 
+  win7_crash_log::Write(L"prerequisites start");
   if (!win7_prereq::EnsurePrerequisites()) {
+    win7_crash_log::Write(L"prerequisites cancelled");
     return EXIT_FAILURE;
   }
   LogPlatformUpdateStatus();
   win7_crash_log::Write(L"prerequisites ok");
+
+  win7_crash_log::Write(L"preload shims");
+  PreloadWin7Shims();
+  if (!win7_iat::PatchProcessImports()) {
+    win7_crash_log::Write(L"IAT patch abort");
+    MessageBoxW(nullptr,
+                L"Не удалось подготовить Win7-совместимость (IAT patch).\r\n\r\n"
+                L"Скопируйте всю папку releases\\windows целиком и проверьте "
+                L"наличие scn_ws2.dll рядом с scn.exe.\r\n\r\n"
+                L"Лог: %TEMP%\\scn_win7.log",
+                L"SCN", MB_OK | MB_ICONERROR);
+    return EXIT_FAILURE;
+  }
 
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.
