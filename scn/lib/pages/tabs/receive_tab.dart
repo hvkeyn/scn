@@ -16,6 +16,7 @@ import 'package:scn/widgets/scn_logo.dart';
 import 'package:scn/widgets/add_peer_dialog.dart';
 import 'package:scn/widgets/invitation_card.dart';
 import 'package:scn/widgets/peer_tile.dart';
+import 'package:scn/utils/win7_platform.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
 class ReceiveTab extends StatefulWidget {
@@ -34,7 +35,9 @@ class _ReceiveTabState extends State<ReceiveTab> {
   @override
   void initState() {
     super.initState();
-    WidgetsBinding.instance.addPostFrameCallback((_) => _refreshInvite());
+    if (!isScnWin7) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _refreshInvite());
+    }
   }
 
   @override
@@ -86,13 +89,14 @@ class _ReceiveTabState extends State<ReceiveTab> {
               ),
             ),
             
-            // P2P Invite Code (Internet)
-            SliverToBoxAdapter(
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
-                child: _buildP2PInviteCard(context),
+            // P2P Invite Code (Internet) — needs mesh/WebRTC; skip on Win7.
+            if (!isScnWin7)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
+                  child: _buildP2PInviteCard(context),
+                ),
               ),
-            ),
             
             // Pending Invitations
             if (invitations.isNotEmpty) ...[

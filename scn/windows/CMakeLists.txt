@@ -59,7 +59,7 @@ add_subdirectory("runner")
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
-# Win7: defer Flutter engine/plugins until runtime IAT redirection runs in wWinMain.
+# Win7: defer Flutter engine/plugins until runtime IAT patch runs in wWinMain.
 set(WIN7_DELAYLOAD_DLLS "flutter_windows.dll")
 foreach(plugin ${FLUTTER_PLUGIN_LIST})
   list(APPEND WIN7_DELAYLOAD_DLLS "${plugin}_plugin.dll")
@@ -120,9 +120,39 @@ install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_DATA_DIR}"
   CONFIGURATIONS Profile;Release
   COMPONENT Runtime)
 
-# Win7 import redirection: /DELAYLOAD + runtime IAT patch (win7_iat_patch.cpp).
+# Win7: LIEF patch PE imports at build time, preload modules at runtime.
+install(CODE "
+  find_program(SCN_PYTHON3 NAMES python3 python)
+  if(SCN_PYTHON3)
+    set(SCN_WIN7_PATCH \"${CMAKE_CURRENT_SOURCE_DIR}/win7_shim/patch_flutter_win7.py\")
+    set(SCN_WIN7_TARGETS
+      \"${CMAKE_INSTALL_PREFIX}/flutter_windows.dll\"
+      \"${CMAKE_INSTALL_PREFIX}/libwebrtc.dll\")
+    foreach(SCN_WIN7_TARGET \${SCN_WIN7_TARGETS})
+      if(EXISTS \"\${SCN_WIN7_TARGET}\")
+        execute_process(
+          COMMAND \"\${SCN_PYTHON3}\" \"\${SCN_WIN7_PATCH}\" \"\${SCN_WIN7_TARGET}\"
+          RESULT_VARIABLE SCN_WIN7_PATCH_RESULT
+          ERROR_VARIABLE SCN_WIN7_PATCH_ERROR)
+        if(NOT SCN_WIN7_PATCH_RESULT EQUAL 0)
+          message(FATAL_ERROR \"Win7 PE patch failed for \${SCN_WIN7_TARGET}: \${SCN_WIN7_PATCH_ERROR}\")
+        endif()
+      endif()
+    endforeach()
+  else()
+    message(WARNING \"python not found; Win7 PE import patch skipped\")
+  endif()
+" COMPONENT Runtime)
 
 install(CODE "
   file(WRITE \"${CMAKE_INSTALL_PREFIX}/WIN7_BUILD.txt\"
        \"build=${FLUTTER_VERSION_BUILD}\\n\")
+  if(EXISTS \"${CMAKE_INSTALL_PREFIX}/scn_gpa.dll\")
+    file(REMOVE \"${CMAKE_INSTALL_PREFIX}/scn_gpa.dll\")
+  endif()
+  # Stale d3d11.dll proxy from older builds shadows the system d3d11 and breaks
+  # Win10 (libwebrtc/ANGLE need the full system d3d11). Remove it if present.
+  if(EXISTS \"${CMAKE_INSTALL_PREFIX}/d3d11.dll\")
+    file(REMOVE \"${CMAKE_INSTALL_PREFIX}/d3d11.dll\")
+  endif()
 " COMPONENT Runtime)

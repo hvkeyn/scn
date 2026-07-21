@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -17,6 +18,7 @@ import 'package:scn/services/remote_desktop/remote_desktop_client_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_relay_service.dart';
 import 'package:scn/utils/logger.dart';
+import 'package:scn/utils/rd_test_env.dart';
 
 class RemoteDesktopPage extends StatefulWidget {
   const RemoteDesktopPage({super.key});
@@ -26,6 +28,11 @@ class RemoteDesktopPage extends StatefulWidget {
 }
 
 class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
+  static const _prefLastHost = 'rd_last_host';
+  static const _prefLastPort = 'rd_last_port';
+  static const _prefLastPassword = 'rd_last_password';
+  static const _prefWantControl = 'rd_want_control';
+
   final TextEditingController _hostCtrl = TextEditingController();
   final TextEditingController _portCtrl = TextEditingController(text: '53317');
   final TextEditingController _passwordCtrl = TextEditingController();
@@ -38,6 +45,88 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   void initState() {
     super.initState();
     _refreshLocalIps();
+    unawaited(_loadLastConnect());
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      unawaited(_maybeAutoConnectForSmoke());
+    });
+  }
+
+  Future<void> _loadLastConnect() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final host = prefs.getString(_prefLastHost);
+      final port = prefs.getString(_prefLastPort);
+      final password = prefs.getString(_prefLastPassword);
+      final wantControl = prefs.getBool(_prefWantControl);
+      if (!mounted) return;
+      setState(() {
+        if (host != null && host.isNotEmpty) {
+          _hostCtrl.text = host;
+        }
+        if (port != null && port.isNotEmpty) {
+          _portCtrl.text = port;
+        }
+        if (password != null && password.isNotEmpty) {
+          _passwordCtrl.text = password;
+        }
+        if (wantControl != null) {
+          _wantControl = wantControl;
+        }
+      });
+    } catch (e) {
+      AppLogger.log('RD page: load last connect failed: $e');
+    }
+  }
+
+  Future<void> _saveLastConnect({
+    required String host,
+    required String port,
+    required String password,
+  }) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_prefLastHost, host);
+      await prefs.setString(_prefLastPort, port);
+      await prefs.setString(_prefLastPassword, password);
+      await prefs.setBool(_prefWantControl, _wantControl);
+    } catch (e) {
+      AppLogger.log('RD page: save last connect failed: $e');
+    }
+  }
+
+  Future<void> _maybeAutoConnectForSmoke() async {
+    final target = rdTestConnectTarget;
+    if (target == null || !mounted) return;
+    final parts = target.split(':');
+    if (parts.length != 2) {
+      AppLogger.log('RD smoke: bad SCN_RD_TEST_CONNECT=$target');
+      return;
+    }
+    final host = parts[0].trim();
+    final port = int.tryParse(parts[1].trim());
+    if (host.isEmpty || port == null) {
+      AppLogger.log('RD smoke: bad SCN_RD_TEST_CONNECT=$target');
+      return;
+    }
+    final app = context.read<AppService>();
+    final password = rdTestPassword;
+    AppLogger.log('RD smoke: auto-connect $host:$port');
+    final params = RemoteDesktopConnectParams(
+      host: host,
+      port: port,
+      myDeviceId: app.deviceId,
+      myAlias: app.deviceAlias,
+      password: password,
+      wantControl: true,
+      wantAudio: false,
+      useHttps: false,
+    );
+    if (!mounted) return;
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => RemoteDesktopViewerPage(params: params),
+      ),
+    );
   }
 
   @override
@@ -841,6 +930,11 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
     if (looksLikeCode &&
         normalizedCode.length >= 6 &&
         !_hasLanDeviceForCode(normalizedCode)) {
+      unawaited(_saveLastConnect(
+        host: input,
+        port: _portCtrl.text.trim().isEmpty ? '53317' : _portCtrl.text.trim(),
+        password: _passwordCtrl.text,
+      ));
       final app = context.read<AppService>();
       final relay = context.read<RemoteDesktopRelayService>();
       final params = RemoteDesktopConnectParams(
@@ -867,6 +961,11 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
       );
       return;
     }
+    unawaited(_saveLastConnect(
+      host: input.isNotEmpty ? input : target.host,
+      port: target.port.toString(),
+      password: _passwordCtrl.text,
+    ));
     final app = context.read<AppService>();
     final params = RemoteDesktopConnectParams(
       host: target.host,

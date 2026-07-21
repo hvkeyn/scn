@@ -11,6 +11,8 @@ import 'package:scn/providers/chat_provider.dart';
 import 'package:scn/providers/receive_provider.dart';
 import 'package:scn/services/update_service.dart';
 import 'package:scn/utils/test_config.dart';
+import 'package:scn/utils/rd_test_env.dart';
+import 'package:scn/utils/win7_platform.dart';
 
 enum HomeTab {
   receive(Icons.wifi, 'Receive'),
@@ -41,10 +43,15 @@ class _HomePageState extends State<HomePage> {
   @override
   void initState() {
     super.initState();
-    // Refresh badges every 500ms to catch updates from HTTP callbacks
-    _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
-      _updateBadges();
-    });
+    if (rdTestConnectTarget != null) {
+      // Remote tab index in NavigationRail / IndexedStack.
+      _currentIndex = 3;
+    }
+    if (!isScnWin7) {
+      _refreshTimer = Timer.periodic(const Duration(milliseconds: 500), (_) {
+        _updateBadges();
+      });
+    }
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _checkForUpdates();
     });
@@ -232,18 +239,20 @@ class _HomePageState extends State<HomePage> {
               ),
             ],
           ),
-          // Content
+          // Content — build only the active tab on Win7 (IndexedStack is heavy).
           Expanded(
-            child: IndexedStack(
-              index: _currentIndex,
-              children: const [
-                ReceiveTab(),
-                SendTab(),
-                ChatTab(),
-                RemoteDesktopPage(),
-                SettingsTab(),
-              ],
-            ),
+            child: isScnWin7
+                ? _buildCurrentTab(_currentIndex)
+                : IndexedStack(
+                    index: _currentIndex,
+                    children: [
+                      ReceiveTab(),
+                      SendTab(),
+                      ChatTab(),
+                      RemoteDesktopPage(),
+                      SettingsTab(),
+                    ],
+                  ),
           ),
         ],
       ),
@@ -302,5 +311,22 @@ class _HomePageState extends State<HomePage> {
       backgroundColor: Colors.red,
       child: Icon(icon),
     );
+  }
+
+  Widget _buildCurrentTab(int index) {
+    switch (index) {
+      case 0:
+        return const ReceiveTab();
+      case 1:
+        return const SendTab();
+      case 2:
+        return const ChatTab();
+      case 3:
+        return const RemoteDesktopPage();
+      case 4:
+        return const SettingsTab();
+      default:
+        return const ReceiveTab();
+    }
   }
 }

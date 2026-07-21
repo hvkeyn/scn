@@ -9,6 +9,9 @@ class _StubInjector implements InputInjector {
   @override
   void setTargetSize(int width, int height) {}
   @override
+  void setCaptureRect(
+      {int left = 0, int top = 0, required int width, required int height}) {}
+  @override
   void inject(event) {}
   @override
   void dispose() {}

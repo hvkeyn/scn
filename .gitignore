@@ -5,8 +5,11 @@ submodules/
 # Build outputs
 releases/
 scn/build/
+scn-release/
 *.exe
 *.dll
+*.so
+*.zip
 
 # IDE
 .idea/
@@ -25,5 +28,14 @@ Thumbs.db
 # Memory bank (local notes)
 memory-bank/
 
-# Test artifacts
+# Test artifacts / local scratch
 *.tmp
+_tmp*
+_loadtest/
+
+# Source packs for USB / other machines
+transport/
+
+# Relay update packages (binaries stay on VPS only)
+server/scn-relay/updates/*.zip
+server/scn-relay/updates/scn-windows.zip

@@ -14,6 +14,8 @@ import 'package:scn/services/desktop_integration_service.dart';
 import 'package:scn/services/update_service.dart';
 import 'package:scn/widgets/scn_logo.dart';
 import 'package:scn/utils/test_config.dart';
+import 'package:scn/utils/win7_platform.dart';
+import 'package:scn/utils/logger.dart';
 import 'package:scn/pages/vpn_page.dart';
 
 class SettingsTab extends StatefulWidget {
@@ -43,13 +45,21 @@ class _SettingsTabState extends State<SettingsTab> {
   }
 
   Future<void> _loadCurrentVersion() async {
-    final info = await PackageInfo.fromPlatform();
-    if (!mounted) return;
-    setState(() {
-      _currentVersionName = info.version;
-      _currentBuild = int.tryParse(info.buildNumber) ?? 0;
-      _currentVersion = '${info.version}+${info.buildNumber}';
-    });
+    try {
+      final info = await PackageInfo.fromPlatform();
+      if (!mounted) return;
+      setState(() {
+        _currentVersionName = info.version;
+        _currentBuild = int.tryParse(info.buildNumber) ?? 0;
+        _currentVersion = '${info.version}+${info.buildNumber}';
+      });
+    } catch (e) {
+      AppLogger.log('Settings: PackageInfo failed: $e');
+      if (!mounted) return;
+      setState(() {
+        _currentVersion = 'unknown';
+      });
+    }
   }
 
   Future<void> _fetchUpdateStatus({bool showSnack = false}) async {
@@ -212,7 +222,7 @@ class _SettingsTabState extends State<SettingsTab> {
                           Text(
                             TestConfig.current.isTestMode
                                 ? 'Отключено в тестовом режиме'
-                                : 'Автопроверка включена',
+                                : 'Автопроверка с relay-сервера',
                             style: TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),
                           ),
                         ],
@@ -256,7 +266,9 @@ class _SettingsTabState extends State<SettingsTab> {
                             )
                           : const Icon(Icons.refresh),
                       label: const Text('Проверить'),
-                      onPressed: (_checkingUpdate || _installingUpdate || TestConfig.current.isTestMode)
+                      onPressed: (_checkingUpdate ||
+                              _installingUpdate ||
+                              TestConfig.current.isTestMode)
                           ? null
                           : () => _fetchUpdateStatus(showSnack: true),
                     ),
@@ -1104,7 +1116,9 @@ class _SettingsTabState extends State<SettingsTab> {
                 style: TextStyle(color: Colors.white)),
             subtitle: Text(
               rd.enabled
-                  ? 'Other devices can request to view this screen'
+                  ? (isScnWin7
+                      ? 'Hosting via GDI frames (JPEG) — WebRTC disabled on Win7'
+                      : 'Other devices can request to view this screen')
                   : 'Hosting is disabled',
               style:
                   TextStyle(color: Colors.white.withOpacity(0.5), fontSize: 12),

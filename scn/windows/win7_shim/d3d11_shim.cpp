@@ -1,6 +1,8 @@
-// Win7 shim: forwards D3D11CreateDevice to system d3d11.dll when available.
+// Win7 shim for D3D11CreateDevice.
+// On Windows 7 returns failure so ANGLE/EGL init fails cleanly and Flutter uses
+// software rendering. On Win8+ forwards to system d3d11.dll.
 
-#include <windows.h>
+#include "win7_shim_common.h"
 
 #include <d3d11.h>
 
@@ -11,13 +13,9 @@ using D3D11CreateDeviceFn = HRESULT(WINAPI*)(
     UINT, ID3D11Device**, D3D_FEATURE_LEVEL*, ID3D11DeviceContext**);
 
 D3D11CreateDeviceFn RealD3D11CreateDevice() {
-  static D3D11CreateDeviceFn fn = reinterpret_cast<D3D11CreateDeviceFn>([]() -> FARPROC {
-    HMODULE module = LoadLibraryW(L"d3d11.dll");
-    if (!module) {
-      return nullptr;
-    }
-    return GetProcAddress(module, "D3D11CreateDevice");
-  }());
+  static D3D11CreateDeviceFn fn = reinterpret_cast<D3D11CreateDeviceFn>(
+      GetProcAddress(scn_win7::LoadSystemModule(L"d3d11.dll"),
+                     "D3D11CreateDevice"));
   return fn;
 }
 
@@ -36,6 +34,11 @@ HRESULT WINAPI ScnD3D11CreateDevice(
     ID3D11Device** device,
     D3D_FEATURE_LEVEL* obtained_feature_level,
     ID3D11DeviceContext** immediate_context) {
+  if (scn_win7::ShouldBlockGpuOnWin7()) {
+    scn_win7::LogShim(L"scn_d3d11: blocked D3D11CreateDevice (Win7 software rendering)");
+    return E_FAIL;
+  }
+
   const D3D11CreateDeviceFn create = RealD3D11CreateDevice();
   if (!create) {
     return HRESULT_FROM_WIN32(ERROR_PROC_NOT_FOUND);

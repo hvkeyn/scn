@@ -45,6 +45,18 @@ enum RemoteDesktopSignalType {
   /// Сообщение со статистикой.
   stats,
 
+  /// JPEG (или иной) кадр экрана по signaling (Win7 frame transport).
+  frame,
+
+  /// Событие ввода viewer → host без WebRTC DataChannel.
+  input,
+
+  /// Синхронизация буфера обмена без DataChannel.
+  clipboard,
+
+  /// Viewer → host: сменить монитор захвата (frames transport).
+  monitorChange,
+
   /// Произвольная ошибка.
   error,
 }

@@ -1,5 +1,6 @@
 #include "win7_env.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <windows.h>
 
@@ -35,8 +36,24 @@ void Apply() {
     return;
   }
 
+  _wputenv(L"SCN_WIN7=1");
   _wputenv(L"ANGLE_DEFAULT_PLATFORM=D3D9");
   _wputenv(L"ANGLE_PREFER_WARP=1");
+  _wputenv(L"FLUTTER_ENGINE_SWITCHES=1");
+  _wputenv(L"FLUTTER_ENGINE_SWITCH_1=enable-software-rendering");
+
+  wchar_t temp[MAX_PATH] = {};
+  if (GetTempPathW(MAX_PATH, temp) != 0) {
+    wchar_t path[MAX_PATH] = {};
+    wsprintfW(path, L"%sscn_win7.log", temp);
+    FILE* log = nullptr;
+    if (_wfopen_s(&log, path, L"a, ccs=UTF-8") == 0 && log) {
+      fwprintf(log, L"win7_env: enable-software-rendering\r\n");
+      fwprintf(log, L"win7_env: GPU blocked via scn_dxgi/d3d11 shims\r\n");
+      fflush(log);
+      fclose(log);
+    }
+  }
 }
 
 }  // namespace win7_env

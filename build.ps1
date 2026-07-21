@@ -154,14 +154,60 @@ function Clear-Processes {
     Start-Sleep -Milliseconds 300
 }
 
+function Get-ScnProcessPath {
+    param([System.Diagnostics.Process]$Proc)
+    try {
+        if ($Proc.Path) { return $Proc.Path }
+    } catch {}
+    try {
+        $cim = Get-CimInstance Win32_Process -Filter "ProcessId=$($Proc.Id)" -ErrorAction Stop
+        if ($cim.ExecutablePath) { return $cim.ExecutablePath }
+    } catch {}
+    return $null
+}
+
+function Test-ScnLocksBuildOutput {
+    param([string]$ExePath)
+    if (-not $ExePath) { return $false }
+    $buildDir = Join-Path $ScnDir "build"
+    $full = [System.IO.Path]::GetFullPath($ExePath)
+    foreach ($root in @($ReleasesDir, $buildDir)) {
+        if (-not $root) { continue }
+        $prefix = [System.IO.Path]::GetFullPath($root).TrimEnd('\') + '\'
+        if ($full.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+            return $true
+        }
+    }
+    return $false
+}
+
 function Stop-SCNProcesses {
-    $running = Get-Process -Name "scn" -ErrorAction SilentlyContinue
-    if (-not $running) {
+    $running = @(Get-Process -Name "scn" -ErrorAction SilentlyContinue)
+    if ($running.Count -eq 0) {
         return $true
     }
 
-    Write-Host "   Stopping running SCN before copying release..." -ForegroundColor Gray
+    Write-Host "   Checking running SCN before copying release..." -ForegroundColor Gray
+    $toStop = @()
     foreach ($proc in $running) {
+        $exePath = Get-ScnProcessPath -Proc $proc
+        if ($exePath -and -not (Test-ScnLocksBuildOutput -ExePath $exePath)) {
+            Write-Host "   Skipping scn.exe PID $($proc.Id) (outside releases/build): $exePath" -ForegroundColor Gray
+            continue
+        }
+        if (-not $exePath) {
+            Write-Host "   scn.exe PID $($proc.Id): path unknown (will try stop only if copy fails later)" -ForegroundColor Gray
+            continue
+        }
+        $toStop += $proc
+    }
+
+    if ($toStop.Count -eq 0) {
+        return $true
+    }
+
+    Write-Host "   Stopping SCN that locks build output..." -ForegroundColor Gray
+    foreach ($proc in $toStop) {
         try {
             Stop-Process -Id $proc.Id -Force -ErrorAction Stop
         } catch {
@@ -173,7 +219,10 @@ function Stop-SCNProcesses {
 
     $deadline = (Get-Date).AddSeconds(5)
     while ((Get-Date) -lt $deadline) {
-        if (-not (Get-Process -Name "scn" -ErrorAction SilentlyContinue)) {
+        $still = @($toStop | ForEach-Object {
+            Get-Process -Id $_.Id -ErrorAction SilentlyContinue
+        } | Where-Object { $_ })
+        if ($still.Count -eq 0) {
             Start-Sleep -Milliseconds 300
             return $true
         }
@@ -313,8 +362,17 @@ function Update-Version {
     }
 }
 
-# Win7 support uses runtime IAT patching (no LIEF needed at build time).
+# Win7 support: patch PE imports at build time (patch_flutter_win7.py, needs pefile).
 function Ensure-Win7PatchDeps {
+    $null = python -c "import pefile" 2>$null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "   Installing pefile for Win7 PE patch..." -ForegroundColor Gray
+        python -m pip install pefile 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "   [FAIL] pip install pefile failed" -ForegroundColor Red
+            return $false
+        }
+    }
     return $true
 }
 
@@ -352,16 +410,18 @@ function Build-Windows {
         return $false
     }
     
-    Write-Host "   Building release..." -ForegroundColor Gray
-    & $Flutter build windows --release 2>&1 | ForEach-Object { Write-Host $_ }
+    # Profile (not Release): flutter_windows.dll reads FLUTTER_ENGINE_SWITCH_* env
+    # vars so Win7 can use enable-software-rendering and skip broken ANGLE/D3D11.
+    Write-Host "   Building profile (Win7-compatible)..." -ForegroundColor Gray
+    & $Flutter build windows --profile 2>&1 | ForEach-Object { Write-Host $_ }
     $flutterExit = $LASTEXITCODE
 
-    $releaseDir = Join-Path $ScnDir "build\windows\x64\runner\Release"
+    $releaseDir = Join-Path $ScnDir "build\windows\x64\runner\Profile"
     $exe = Join-Path $releaseDir "scn.exe"
     $win7Marker = Join-Path $releaseDir "WIN7_BUILD.txt"
 
     if ($flutterExit -ne 0 -or -not (Test-Path $exe) -or -not (Test-Path $win7Marker)) {
-        Write-Host "   [FAIL] Flutter Windows release build failed" -ForegroundColor Red
+        Write-Host "   [FAIL] Flutter Windows profile build failed" -ForegroundColor Red
         if ($flutterExit -eq 0) {
             Write-Host "   INSTALL step likely failed (close scn.exe / run terminal as admin)" -ForegroundColor Yellow
             Write-Host "   Expected marker: $win7Marker" -ForegroundColor Gray

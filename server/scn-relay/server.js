@@ -1,5 +1,7 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const http = require('http');
+const path = require('path');
 const { WebSocketServer } = require('ws');
 
 const PORT = Number(process.env.SCN_RELAY_PORT || 53319);
@@ -9,6 +11,7 @@ const PUBLIC_BASE_URL = process.env.SCN_PUBLIC_BASE_URL || `http://5.187.4.132:$
 const TURN_USERNAME = process.env.SCN_TURN_USERNAME || 'scn';
 const TURN_CREDENTIAL = process.env.SCN_TURN_CREDENTIAL || '';
 const TURN_HOST = process.env.SCN_TURN_HOST || '5.187.4.132';
+const UPDATES_DIR = process.env.SCN_UPDATES_DIR || path.join(__dirname, 'updates');
 
 const hosts = new Map();
 const hostCodes = new Map();
@@ -72,27 +75,71 @@ function publicHosts() {
   }));
 }
 
+function contentTypeFor(filePath) {
+  const ext = path.extname(filePath).toLowerCase();
+  if (ext === '.json') return 'application/json; charset=utf-8';
+  if (ext === '.zip') return 'application/zip';
+  if (ext === '.txt' || ext === '.md') return 'text/plain; charset=utf-8';
+  return 'application/octet-stream';
+}
+
+function serveUpdateFile(req, res, urlPath) {
+  // Only allow /scn/<safe-filename>
+  const rel = decodeURIComponent(urlPath.replace(/^\/scn\//, ''));
+  if (!rel || rel.includes('..') || path.isAbsolute(rel) || rel.includes('/') || rel.includes('\\')) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'bad_path' }));
+    return;
+  }
+  const filePath = path.join(UPDATES_DIR, rel);
+  if (!filePath.startsWith(UPDATES_DIR)) {
+    res.writeHead(400, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: 'bad_path' }));
+    return;
+  }
+  fs.stat(filePath, (err, st) => {
+    if (err || !st.isFile()) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ error: 'not_found' }));
+      return;
+    }
+    res.writeHead(200, {
+      'content-type': contentTypeFor(filePath),
+      'content-length': st.size,
+      'cache-control': 'no-cache',
+      'access-control-allow-origin': '*',
+    });
+    fs.createReadStream(filePath).pipe(res);
+  });
+}
+
 const server = http.createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/api/v1/health') {
+  const urlPath = (req.url || '').split('?')[0];
+
+  if (req.method === 'GET' && urlPath === '/api/v1/health') {
     const body = JSON.stringify({
       ok: true,
       service: 'scn-relay',
       timestamp: nowIso(),
       hosts: publicHosts().length,
       sessions: sessions.size,
+      updatesDir: UPDATES_DIR,
     });
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(body);
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/api/v1/config') {
+  if (req.method === 'GET' && urlPath === '/api/v1/config') {
     const body = JSON.stringify({
       ok: true,
       timestamp: nowIso(),
       relay: {
         httpUrl: PUBLIC_BASE_URL,
         wsUrl: PUBLIC_BASE_URL.replace(/^http/, 'ws') + '/ws',
+      },
+      update: {
+        manifestUrl: `${PUBLIC_BASE_URL}/scn/update.json`,
       },
       iceServers: iceServers(),
     });
@@ -101,9 +148,14 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'GET' && req.url === '/api/v1/rd/hosts') {
+  if (req.method === 'GET' && urlPath === '/api/v1/rd/hosts') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ hosts: publicHosts() }));
+    return;
+  }
+
+  if (req.method === 'GET' && urlPath.startsWith('/scn/')) {
+    serveUpdateFile(req, res, urlPath);
     return;
   }
 

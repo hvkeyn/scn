@@ -1,201 +1,332 @@
+import 'dart:async';
 import 'dart:ffi';
 import 'dart:io';
 
 import 'package:ffi/ffi.dart';
+import 'package:flutter/foundation.dart';
+import 'package:scn/utils/logger.dart';
 import 'package:win32/win32.dart';
 
-import 'package:scn/utils/logger.dart';
-
-/// Управление главным окном SCN на хост-машине во время активной сессии RD.
-///
-/// Проблема: пока хост стримит экран, окно SCN на хосте находится поверх
-/// других окон. Когда viewer "кликает свернуть/закрыть" в координатах,
-/// которые на хосте попадают НА title-bar SCN или его debug-консоль, клик
-/// уходит в SCN, активирует/сворачивает его, Flutter Windows lifecycle
-/// переходит в `paused`/`inactive`, и `RTCDataChannel.onMessage` перестаёт
-/// обрабатываться (события скапливаются и выдаются пачкой когда юзер
-/// раз-сворачивает SCN).
-///
-/// Решение:
-///   1. На время сессии **переносим окно SCN за пределы экрана**
-///      (-32000,-32000) и сжимаем до 1×1. Окно не minimized → Flutter
-///      остаётся `resumed`. Гарантированно не получает кликов мыши, т.к.
-///      его HWND вообще нет в видимой части экрана.
-///   2. Скрываем debug-консоль Flutter (только debug-сборка): её title-bar
-///      виден на экране и по нему тоже легко кликнуть.
-///   3. По завершении ВСЕХ сессий — восстанавливаем оригинальный rect и
-///      возвращаем консоль.
+/// Прячет окно SCN во время RD-сессии (клики не бьют в Flutter),
+/// но позволяет локально вернуть его через taskbar / tray.
 class HostWindowManager {
-  static int _activeSessions = 0;
-  static _SavedRect? _savedRect;
-  static int _savedHwnd = 0;
-  static int _savedConsoleHwnd = 0;
+  HostWindowManager._();
 
+  static int _activeSessions = 0;
   static bool get hasActiveSessions => _activeSessions > 0;
 
-  // Координаты "виртуального небытия" в Windows: окно с такими x/y
-  // сохраняет свой HWND, не minimized, но не виден пользователю и не
-  // принимает hit-test'ов от мыши.
-  static const int _hiddenX = -32000;
-  static const int _hiddenY = -32000;
+  static int? _savedX;
+  static int? _savedY;
+  static int? _savedWidth;
+  static int? _savedHeight;
+  static int? _savedShowCmd;
+  static int? _hwnd;
+  static bool _hidden = false;
+  static bool _userRestored = false;
+
+  static int? _savedConsoleX;
+  static int? _savedConsoleY;
+  static int? _savedConsoleWidth;
+  static int? _savedConsoleHeight;
+  static int? _savedConsoleShowCmd;
+  static int? _consoleHwnd;
+  static bool _consoleHidden = false;
+
+  static Timer? _activationWatch;
 
   static void onSessionStarted() {
     _activeSessions++;
+    AppLogger.log(
+        'HostWindowManager: session started (active=$_activeSessions)');
     if (_activeSessions == 1) {
+      _userRestored = false;
       _hideMainWindow();
-      _hideConsoleWindow();
+      if (kDebugMode) _hideConsoleWindow();
     }
   }
 
   static void onSessionEnded() {
-    if (_activeSessions == 0) return;
-    _activeSessions--;
+    if (_activeSessions > 0) _activeSessions--;
+    AppLogger.log(
+        'HostWindowManager: session ended (active=$_activeSessions)');
     if (_activeSessions == 0) {
+      _stopActivationWatch();
+      _userRestored = false;
       _restoreMainWindow();
-      _restoreConsoleWindow();
+      if (kDebugMode) _restoreConsoleWindow();
     }
   }
 
+  /// Пользователь нажал SCN в taskbar/tray — показать окно поверх.
+  static void restoreForUser() {
+    if (!Platform.isWindows || _activeSessions <= 0) return;
+    _userRestored = true;
+    _stopActivationWatch();
+    final hwnd = _findMainHwnd();
+    if (hwnd == 0) return;
+    _hwnd = hwnd;
+
+    if (_hidden &&
+        _savedX != null &&
+        _savedY != null &&
+        _savedWidth != null &&
+        _savedHeight != null) {
+      SetWindowPos(
+        hwnd,
+        HWND_TOP,
+        _savedX!,
+        _savedY!,
+        _savedWidth!,
+        _savedHeight!,
+        SWP_NOACTIVATE,
+      );
+      _hidden = false;
+    }
+
+    final showCmd = _savedShowCmd == SW_SHOWMINIMIZED
+        ? SW_RESTORE
+        : (_savedShowCmd ?? SW_RESTORE);
+    ShowWindow(hwnd, showCmd);
+    ShowWindow(hwnd, SW_SHOW);
+    BringWindowToTop(hwnd);
+    SetForegroundWindow(hwnd);
+    SetActiveWindow(hwnd);
+    SetFocus(hwnd);
+    AppLogger.log('HostWindowManager: restored for user (hwnd=$hwnd)');
+  }
+
+  /// Пока сессия активна и пользователь не открыл SCN — держать окно скрытым.
   static void keepHiddenIfNeeded() {
-    if (_activeSessions <= 0) return;
-    _hideMainWindow();
-    _hideConsoleWindow();
+    if (_activeSessions > 0 && !_userRestored) {
+      _hideMainWindow();
+      if (kDebugMode) _hideConsoleWindow();
+    }
   }
 
   static void _hideMainWindow() {
-    if (!Platform.isWindows) return;
+    if (!Platform.isWindows || _hidden || _userRestored) return;
     try {
-      final pid = GetCurrentProcessId();
-      final hwnd = _findMainWindowOfProcess(pid);
+      final hwnd = _findMainHwnd();
       if (hwnd == 0) {
-        AppLogger.log('HostWindowManager: main window not found');
+        AppLogger.log('HostWindowManager: main hwnd not found');
         return;
       }
-      if (_savedHwnd == 0) {
-        final rectPtr = calloc<RECT>();
-        try {
-          if (GetWindowRect(hwnd, rectPtr) != 0) {
-            _savedRect = _SavedRect(
-              left: rectPtr.ref.left,
-              top: rectPtr.ref.top,
-              width: rectPtr.ref.right - rectPtr.ref.left,
-              height: rectPtr.ref.bottom - rectPtr.ref.top,
-            );
-            _savedHwnd = hwnd;
-          }
-        } finally {
-          calloc.free(rectPtr);
+      _hwnd = hwnd;
+
+      final wp = calloc<WINDOWPLACEMENT>();
+      try {
+        wp.ref.length = sizeOf<WINDOWPLACEMENT>();
+        if (GetWindowPlacement(hwnd, wp) != 0) {
+          _savedShowCmd = wp.ref.showCmd;
+          _savedX = wp.ref.rcNormalPosition.left;
+          _savedY = wp.ref.rcNormalPosition.top;
+          _savedWidth =
+              wp.ref.rcNormalPosition.right - wp.ref.rcNormalPosition.left;
+          _savedHeight =
+              wp.ref.rcNormalPosition.bottom - wp.ref.rcNormalPosition.top;
         }
-      } else if (_savedHwnd != hwnd) {
-        AppLogger.log(
-          'HostWindowManager: keeping saved hwnd=$_savedHwnd, current hwnd=$hwnd',
-        );
+      } finally {
+        calloc.free(wp);
       }
-      const swpNoZorder = 0x0004;
-      const swpNoActivate = 0x0010;
+
       SetWindowPos(
-          hwnd, 0, _hiddenX, _hiddenY, 1, 1, swpNoZorder | swpNoActivate);
-      AppLogger.log('HostWindowManager: moved SCN window hwnd=$hwnd off-screen '
-          '($_hiddenX,$_hiddenY 1x1), saved rect=$_savedRect');
-    } catch (e, st) {
-      AppLogger.log('HostWindowManager: hide failed: $e\n$st');
+        hwnd,
+        HWND_BOTTOM,
+        -32000,
+        -32000,
+        1,
+        1,
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+      );
+      _hidden = true;
+      AppLogger.log(
+          'HostWindowManager: hidden hwnd=$hwnd '
+          '(was ${_savedWidth}x$_savedHeight @ $_savedX,$_savedY)');
+      _startActivationWatch();
+    } catch (e) {
+      AppLogger.log('HostWindowManager: hide failed: $e');
     }
   }
 
   static void _restoreMainWindow() {
-    if (!Platform.isWindows) return;
-    final saved = _savedRect;
-    final hwnd = _savedHwnd;
-    if (saved == null || hwnd == 0) return;
+    if (!Platform.isWindows || !_hidden) return;
     try {
-      const swpNoZorder = 0x0004;
-      const swpNoActivate = 0x0010;
-      SetWindowPos(hwnd, 0, saved.left, saved.top, saved.width, saved.height,
-          swpNoZorder | swpNoActivate);
-      AppLogger.log(
-          'HostWindowManager: restored SCN window hwnd=$hwnd to $saved');
+      final hwnd = _hwnd ?? _findMainHwnd();
+      if (hwnd == 0) return;
+
+      if (_savedX != null &&
+          _savedY != null &&
+          _savedWidth != null &&
+          _savedHeight != null) {
+        SetWindowPos(
+          hwnd,
+          HWND_TOP,
+          _savedX!,
+          _savedY!,
+          _savedWidth!,
+          _savedHeight!,
+          SWP_NOACTIVATE,
+        );
+      }
+
+      final showCmd = _savedShowCmd ?? SW_RESTORE;
+      ShowWindow(hwnd, showCmd == SW_SHOWMINIMIZED ? SW_RESTORE : showCmd);
+      _hidden = false;
+      AppLogger.log('HostWindowManager: restored hwnd=$hwnd');
     } catch (e) {
       AppLogger.log('HostWindowManager: restore failed: $e');
-    } finally {
-      _savedRect = null;
-      _savedHwnd = 0;
     }
   }
 
-  /// Скрывает консольное окно (debug-сборка Flutter Windows). В release
-  /// сборке GetConsoleWindow вернёт 0 — no-op.
-  static void _hideConsoleWindow() {
-    if (!Platform.isWindows) return;
+  static void _startActivationWatch() {
+    _activationWatch?.cancel();
+    _activationWatch =
+        Timer.periodic(const Duration(milliseconds: 400), (_) {
+      if (_activeSessions <= 0 || _userRestored || !_hidden) {
+        _stopActivationWatch();
+        return;
+      }
+      final hwnd = _hwnd ?? 0;
+      if (hwnd == 0) return;
+      if (GetForegroundWindow() == hwnd) {
+        AppLogger.log(
+            'HostWindowManager: taskbar activation detected → restore');
+        restoreForUser();
+      }
+    });
+  }
+
+  static void _stopActivationWatch() {
+    _activationWatch?.cancel();
+    _activationWatch = null;
+  }
+
+  static int _findMainHwnd() {
+    final pid = GetCurrentProcessId();
+    final result = calloc<IntPtr>();
+    final pidPtr = calloc<Uint32>()..value = pid;
     try {
-      final hConsole = GetConsoleWindow();
-      if (hConsole == 0) return;
-      _savedConsoleHwnd = hConsole;
-      ShowWindow(hConsole, SW_HIDE);
-      AppLogger.log('HostWindowManager: hidden console hwnd=$hConsole');
+      final callback = NativeCallable<EnumWindowsProc>.isolateLocal(
+        (int hwnd, int lParam) {
+          final windowPid = calloc<Uint32>();
+          try {
+            GetWindowThreadProcessId(hwnd, windowPid);
+            if (windowPid.value != pid) return TRUE;
+            if (GetWindow(hwnd, GW_OWNER) != 0) return TRUE;
+            if (IsWindowVisible(hwnd) == 0 && !_hidden) return TRUE;
+
+            final cls = wsalloc(256);
+            try {
+              GetClassName(hwnd, cls, 256);
+              final className = cls.toDartString();
+              if (className.contains('Flutter') ||
+                  className.contains('FLUTTER') ||
+                  className == 'FLUTTERVIEW' ||
+                  className.contains('Win32Window')) {
+                result.value = hwnd;
+                return FALSE;
+              }
+            } finally {
+              free(cls);
+            }
+
+            final title = wsalloc(256);
+            try {
+              GetWindowText(hwnd, title, 256);
+              final t = title.toDartString().toLowerCase();
+              if (t.contains('scn') || t.contains('localsend')) {
+                result.value = hwnd;
+                return FALSE;
+              }
+            } finally {
+              free(title);
+            }
+            return TRUE;
+          } finally {
+            calloc.free(windowPid);
+          }
+        },
+        exceptionalReturn: 0,
+      );
+      try {
+        EnumWindows(callback.nativeFunction, pidPtr.address);
+      } finally {
+        callback.close();
+      }
+      return result.value;
+    } finally {
+      calloc.free(result);
+      calloc.free(pidPtr);
+    }
+  }
+
+  static void _hideConsoleWindow() {
+    if (!Platform.isWindows || _consoleHidden) return;
+    try {
+      final hwnd = GetConsoleWindow();
+      if (hwnd == 0) return;
+      _consoleHwnd = hwnd;
+
+      final wp = calloc<WINDOWPLACEMENT>();
+      try {
+        wp.ref.length = sizeOf<WINDOWPLACEMENT>();
+        if (GetWindowPlacement(hwnd, wp) != 0) {
+          _savedConsoleShowCmd = wp.ref.showCmd;
+          _savedConsoleX = wp.ref.rcNormalPosition.left;
+          _savedConsoleY = wp.ref.rcNormalPosition.top;
+          _savedConsoleWidth =
+              wp.ref.rcNormalPosition.right - wp.ref.rcNormalPosition.left;
+          _savedConsoleHeight =
+              wp.ref.rcNormalPosition.bottom - wp.ref.rcNormalPosition.top;
+        }
+      } finally {
+        calloc.free(wp);
+      }
+
+      SetWindowPos(
+        hwnd,
+        HWND_BOTTOM,
+        -32000,
+        -32000,
+        1,
+        1,
+        SWP_NOACTIVATE | SWP_NOSENDCHANGING,
+      );
+      _consoleHidden = true;
+      AppLogger.log('HostWindowManager: console hidden hwnd=$hwnd');
     } catch (e) {
-      AppLogger.log('HostWindowManager: hide console failed: $e');
+      AppLogger.log('HostWindowManager: console hide failed: $e');
     }
   }
 
   static void _restoreConsoleWindow() {
-    if (!Platform.isWindows) return;
-    if (_savedConsoleHwnd == 0) return;
+    if (!Platform.isWindows || !_consoleHidden) return;
     try {
-      ShowWindow(_savedConsoleHwnd, SW_SHOW);
-      AppLogger.log(
-          'HostWindowManager: restored console hwnd=$_savedConsoleHwnd');
-    } catch (e) {
-      AppLogger.log('HostWindowManager: restore console failed: $e');
-    } finally {
-      _savedConsoleHwnd = 0;
-    }
-  }
+      final hwnd = _consoleHwnd ?? GetConsoleWindow();
+      if (hwnd == 0) return;
 
-  static int _findMainWindowOfProcess(int pid) {
-    int found = 0;
-    final consoleHwnd = Platform.isWindows ? GetConsoleWindow() : 0;
-    final pidPtr = calloc<Uint32>();
-    try {
-      final cb = NativeCallable<EnumWindowsProc>.isolateLocal(
-        (int hwnd, int lParam) {
-          if (hwnd == consoleHwnd) {
-            return TRUE;
-          }
-          GetWindowThreadProcessId(hwnd, pidPtr);
-          if (pidPtr.value == pid && IsWindowVisible(hwnd) != 0) {
-            if (GetWindow(hwnd, GW_OWNER) == 0) {
-              found = hwnd;
-              return FALSE;
-            }
-          }
-          return TRUE;
-        },
-        exceptionalReturn: TRUE,
-      );
-      try {
-        EnumWindows(cb.nativeFunction, 0);
-      } finally {
-        cb.close();
+      if (_savedConsoleX != null &&
+          _savedConsoleY != null &&
+          _savedConsoleWidth != null &&
+          _savedConsoleHeight != null) {
+        SetWindowPos(
+          hwnd,
+          HWND_TOP,
+          _savedConsoleX!,
+          _savedConsoleY!,
+          _savedConsoleWidth!,
+          _savedConsoleHeight!,
+          SWP_NOACTIVATE,
+        );
       }
-    } finally {
-      calloc.free(pidPtr);
+
+      final showCmd = _savedConsoleShowCmd ?? SW_RESTORE;
+      ShowWindow(
+          hwnd, showCmd == SW_SHOWMINIMIZED ? SW_RESTORE : showCmd);
+      _consoleHidden = false;
+      AppLogger.log('HostWindowManager: console restored hwnd=$hwnd');
+    } catch (e) {
+      AppLogger.log('HostWindowManager: console restore failed: $e');
     }
-    return found;
   }
-}
-
-class _SavedRect {
-  final int left;
-  final int top;
-  final int width;
-  final int height;
-  const _SavedRect({
-    required this.left,
-    required this.top,
-    required this.width,
-    required this.height,
-  });
-
-  @override
-  String toString() => '($left,$top ${width}x$height)';
 }

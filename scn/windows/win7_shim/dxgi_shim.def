@@ -2,3 +2,4 @@ LIBRARY scn_dxgi
 EXPORTS
     CreateDXGIFactory1=ScnCreateDXGIFactory1
     CreateDXGIFactory=ScnCreateDXGIFactory
+    CreateDXGIFactory2=ScnCreateDXGIFactory2

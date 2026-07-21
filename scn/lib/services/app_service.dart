@@ -13,9 +13,12 @@ import 'package:scn/utils/device_name_generator.dart';
 import 'package:scn/utils/test_storage.dart';
 import 'package:scn/utils/test_config.dart';
 import 'package:scn/utils/logger.dart';
+import 'package:scn/utils/win7_platform.dart';
 import 'package:scn/models/device_visibility.dart';
+import 'package:scn/models/remote_desktop_models.dart';
 import 'package:crypto/crypto.dart';
 import 'dart:convert';
+import 'dart:io';
 
 /// Main application service that coordinates all services
 class AppService extends ChangeNotifier {
@@ -85,15 +88,19 @@ class AppService extends ChangeNotifier {
       _meshNetwork.setProvider(peerProvider);
       _meshNetwork.onStateChanged = notifyListeners;
       _peerSettingsListener = () {
+        AppLogger.log(
+            'AppService: peer settings changed rd.enabled=${peerProvider.settings.remoteDesktop.enabled}');
         _meshNetwork.updateSettings(peerProvider.settings);
-        _rdHostService.applySettings(peerProvider.settings.remoteDesktop);
-        _rdRelayService.applySettings(peerProvider.settings.remoteDesktop);
-        _rdFileHostService.applySettings(peerProvider.settings.remoteDesktop);
+        final rd = peerProvider.settings.remoteDesktop;
+        _rdHostService.applySettings(rd);
+        _rdRelayService.applySettings(rd);
+        _rdFileHostService.applySettings(rd);
       };
       peerProvider.addListener(_peerSettingsListener!);
-      _rdHostService.applySettings(peerProvider.settings.remoteDesktop);
-      _rdRelayService.applySettings(peerProvider.settings.remoteDesktop);
-      _rdFileHostService.applySettings(peerProvider.settings.remoteDesktop);
+      final rd = peerProvider.settings.remoteDesktop;
+      _rdHostService.applySettings(rd);
+      _rdRelayService.applySettings(rd);
+      _rdFileHostService.applySettings(rd);
     }
 
     _updateDeviceInfo();
@@ -232,51 +239,97 @@ class AppService extends ChangeNotifier {
   Future<void> initialize({int? port}) async {
     if (_running) return;
 
+    final win7 = Platform.environment['SCN_WIN7'] == '1';
+
     try {
       // Stop services first if they were running before
       if (_initialized) {
         try {
           await _httpServer.stop();
           await _discovery.stop();
-          await _meshNetwork.stop();
+          if (!win7) {
+            await _meshNetwork.stop();
+          }
         } catch (e) {
           debugPrint('Error stopping services: $e');
         }
       }
 
-      // Load remote peers if provider is set
+      if (win7) {
+        AppLogger.log('Win7: init load peers');
+      }
       await _peerProvider?.load();
 
-      // Start HTTP server (use provided port if in test mode)
+      if (win7) {
+        AppLogger.log('Win7: init http server');
+      }
       await _httpServer.start(port: port);
 
       _initialized = true;
       _running = true;
 
-      // Update device info AFTER HTTP server started (so port is correct)
       _updateDeviceInfo();
 
-      // Start device discovery AFTER device info is updated
+      if (win7) {
+        AppLogger.log('Win7: init discovery');
+      }
       await _discovery.start();
 
-      // Start mesh network service
-      try {
-        if (_peerProvider != null) {
-          _meshNetwork.updateSettings(_peerProvider!.settings);
-          _rdRelayService.applySettings(_peerProvider!.settings.remoteDesktop);
-        }
-        await _meshNetwork.start();
-      } catch (e) {
-        AppLogger.log('Mesh network failed to start (non-fatal): $e');
+      if (win7) {
+        AppLogger.log('Win7: init complete (mesh skipped — build 192 baseline)');
+      } else {
+        await startMeshNetwork();
       }
 
       notifyListeners();
-    } catch (e) {
+    } catch (e, stack) {
+      if (win7) {
+        AppLogger.log('Win7: init failed: $e\n$stack');
+      }
       debugPrint('Failed to initialize app: $e');
       _running = false;
       _updateDeviceInfo();
       notifyListeners();
       rethrow;
+    }
+  }
+
+  /// Starts WAN/LAN mesh. On Win7 this must run only after [Win7BootGate] shows main UI.
+  Future<void> startMeshNetwork() async {
+    if (_meshNetwork.isRunning) {
+      return;
+    }
+    try {
+      if (_peerProvider != null) {
+        _meshNetwork.updateSettings(_peerProvider!.settings);
+        _rdRelayService.applySettings(
+            _peerProvider!.settings.remoteDesktop);
+      }
+      await _meshNetwork.start();
+      notifyListeners();
+    } catch (e, stack) {
+      AppLogger.log('Mesh network failed to start (non-fatal): $e\n$stack');
+    }
+  }
+
+  /// Discovery periodic announce — defer on Win7 until the UI event loop is alive.
+  void startDiscoveryPeriodicAnnounce() {
+    _discovery.startPeriodicAnnounce();
+  }
+
+  /// Re-apply RD relay/host identity after deferred Win7 startup (mesh/WebRTC).
+  void refreshRemoteDesktopServices() {
+    _rdHostService.setIdentity(
+      deviceId: _deviceFingerprint,
+      alias: _deviceAlias,
+    );
+    _rdRelayService.setIdentity(
+      deviceId: _deviceFingerprint,
+      alias: _deviceAlias,
+    );
+    if (_peerProvider != null) {
+      _rdRelayService.applySettings(
+          _peerProvider!.settings.remoteDesktop);
     }
   }
 

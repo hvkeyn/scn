@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:http/http.dart' as http;
+import 'package:scn/utils/win7_platform.dart';
 import 'package:scn/models/device.dart';
 import 'package:scn/models/multicast_dto.dart';
 import 'package:scn/services/http_client_service.dart';
@@ -93,10 +94,11 @@ class DiscoveryService {
         });
       }
       
-      // Periodically announce this device
-      _announceTimer = Timer.periodic(const Duration(seconds: 5), (_) {
-        sendAnnouncement();
-      });
+      // Periodically announce this device (timer started at init on Win8+;
+      // on Win7 call [startPeriodicAnnounce] after the main UI is shown).
+      if (!isScnWin7) {
+        startPeriodicAnnounce();
+      }
       
       // Initial announcement
       sendAnnouncement();
@@ -210,16 +212,27 @@ class DiscoveryService {
     final data = dto.toBytes();
     final address = InternetAddress(multicastGroup);
     
-    // Send announcement with delays (like original)
-    Future.delayed(const Duration(milliseconds: 100), () {
-      _sendMulticastData(data, address);
+    // Win7: single immediate send; delayed Future callbacks may never run
+    // during the long software-render first frame.
+    _sendMulticastData(data, address);
+    if (!isScnWin7) {
+      Future.delayed(const Duration(milliseconds: 500), () {
+        _sendMulticastData(data, address);
+      });
+      Future.delayed(const Duration(milliseconds: 2000), () {
+        _sendMulticastData(data, address);
+      });
+    }
+  }
+  
+  void startPeriodicAnnounce() {
+    if (_announceTimer != null || _sockets.isEmpty) {
+      return;
+    }
+    _announceTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      sendAnnouncement();
     });
-    Future.delayed(const Duration(milliseconds: 500), () {
-      _sendMulticastData(data, address);
-    });
-    Future.delayed(const Duration(milliseconds: 2000), () {
-      _sendMulticastData(data, address);
-    });
+    print('Discovery periodic announce started');
   }
   
   void _sendMulticastData(List<int> data, InternetAddress address) {

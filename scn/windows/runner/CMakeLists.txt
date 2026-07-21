@@ -14,21 +14,37 @@ add_executable(${BINARY_NAME} WIN32
   "win7_prereq.cpp"
   "win7_crash_log.cpp"
   "win7_env.cpp"
+  "win7_flutter_diag.cpp"
   "win7_iat_patch.cpp"
+  "win7_iat_redirect.cpp"
+  "win7_mesh_signal.cpp"
+  "win7_mesh_channel.cpp"
+  "win7_webrtc_enable.cpp"
+  "win7_rd_channel.cpp"
+  "win7_rd_capture.cpp"
   "win7_delayload.cpp"
   "win32_window.cpp"
-  "${FLUTTER_MANAGED_DIR}/generated_plugin_registrant.cc"
+  "scn_plugin_registrant.cpp"
   "Runner.rc"
   "runner.exe.manifest"
 )
 
 # Remote desktop control on Windows must run elevated; otherwise UIPI blocks
 # injected mouse/keyboard events for elevated target windows.
-set_target_properties(${BINARY_NAME} PROPERTIES
-  VS_GLOBAL_UACExecutionLevel "requireAdministrator"
-  VS_GLOBAL_UACUIAccess "false")
-target_link_options(${BINARY_NAME} PRIVATE
-  "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+# SCN_SMOKE_NO_UAC=1 → asInvoker so automated LAN smoke can launch without UAC.
+if(DEFINED ENV{SCN_SMOKE_NO_UAC} AND "$ENV{SCN_SMOKE_NO_UAC}" STREQUAL "1")
+  set_target_properties(${BINARY_NAME} PROPERTIES
+    VS_GLOBAL_UACExecutionLevel "asInvoker"
+    VS_GLOBAL_UACUIAccess "false")
+  target_link_options(${BINARY_NAME} PRIVATE
+    "/MANIFESTUAC:level='asInvoker' uiAccess='false'")
+else()
+  set_target_properties(${BINARY_NAME} PROPERTIES
+    VS_GLOBAL_UACExecutionLevel "requireAdministrator"
+    VS_GLOBAL_UACUIAccess "false")
+  target_link_options(${BINARY_NAME} PRIVATE
+    "/MANIFESTUAC:level='requireAdministrator' uiAccess='false'")
+endif()
 
 # Apply the standard set of build settings. This can be removed for applications
 # that need different build settings.
@@ -51,7 +67,8 @@ target_link_libraries(${BINARY_NAME} PRIVATE "dwmapi.lib" "delayimp.lib")
 # Deploy scn_ntdll.dll next to scn.exe but load it from wWinMain (not at process start).
 add_dependencies(${BINARY_NAME} scn_ntdll)
 # Remote-desktop privileged input service helper.
-target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib" "userenv.lib" "wtsapi32.lib" "urlmon.lib")
+target_link_libraries(${BINARY_NAME} PRIVATE "advapi32.lib" "userenv.lib" "wtsapi32.lib" "urlmon.lib"
+  "gdi32.lib" "gdiplus.lib" "ole32.lib")
 target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.

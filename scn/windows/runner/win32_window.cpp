@@ -5,6 +5,7 @@
 
 #include "resource.h"
 #include "win7_crash_log.h"
+#include "win7_env.h"
 
 namespace {
 
@@ -280,6 +281,9 @@ void Win32Window::OnDestroy() {
 }
 
 void Win32Window::UpdateTheme(HWND const window) {
+  if (win7_env::IsWindows7()) {
+    return;
+  }
   DWORD light_mode;
   DWORD light_mode_size = sizeof(light_mode);
   LSTATUS result = RegGetValue(HKEY_CURRENT_USER, kGetPreferredBrightnessRegKey,

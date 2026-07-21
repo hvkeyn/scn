@@ -24,6 +24,23 @@ FILE* LogFile() {
   return file;
 }
 
+LONG WINAPI VectoredExceptionHandler(_EXCEPTION_POINTERS* info) {
+  const DWORD code =
+      info && info->ExceptionRecord ? info->ExceptionRecord->ExceptionCode : 0;
+  // MSVC thread naming probe; not a crash.
+  if (code == 0x406D1388) {
+    return EXCEPTION_CONTINUE_SEARCH;
+  }
+  if (FILE* log = LogFile()) {
+    void* const address =
+        info && info->ExceptionRecord ? info->ExceptionRecord->ExceptionAddress
+                                      : nullptr;
+    fwprintf(log, L"Vectored exception code=0x%08lX at %p\r\n", code, address);
+    fflush(log);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
 LONG WINAPI UnhandledExceptionFilter(_EXCEPTION_POINTERS* info) {
   if (FILE* log = LogFile()) {
     const DWORD code =
@@ -46,6 +63,12 @@ LONG WINAPI UnhandledExceptionFilter(_EXCEPTION_POINTERS* info) {
             reinterpret_cast<DWORD_PTR>(address) - base;
         fwprintf(log, L"  in %s+0x%llX\r\n", module_path,
                  static_cast<unsigned long long>(offset));
+      } else {
+        MEMORY_BASIC_INFORMATION mbi = {};
+        if (VirtualQuery(address, &mbi, sizeof(mbi)) != 0) {
+          fwprintf(log, L"  VirtualQuery state=0x%lX protect=0x%lX alloc_base=%p\r\n",
+                   mbi.State, mbi.Protect, mbi.AllocationBase);
+        }
       }
     }
     fflush(log);
@@ -59,6 +82,7 @@ void Install() {
   if (!win7_env::IsWindows7()) {
     return;
   }
+  AddVectoredExceptionHandler(1, VectoredExceptionHandler);
   SetUnhandledExceptionFilter(UnhandledExceptionFilter);
   if (FILE* log = LogFile()) {
     fwprintf(log, L"--- SCN start build %d ---\r\n", FLUTTER_VERSION_BUILD);

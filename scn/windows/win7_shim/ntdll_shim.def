@@ -2,5 +2,10 @@ LIBRARY scn_ntdll
 EXPORTS
     RtlAddGrowableFunctionTable=ScnRtlAddGrowableFunctionTable
     RtlDeleteGrowableFunctionTable=ScnRtlDeleteGrowableFunctionTable
-    RtlGrowFunctionTable=ScnRtlGrowFunctionTable
+    RtlUnwind=ntdll.RtlUnwind
+    RtlUnwindEx=ntdll.RtlUnwindEx
     VerSetConditionMask=ScnVerSetConditionMask
+    RtlGrowFunctionTable=ScnRtlGrowFunctionTable
+    ScnWin7TlsCallback
+    ScnHookedGetProcAddress
+    ScnPatchFlutterGetProcAddress

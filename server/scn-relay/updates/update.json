@@ -1,0 +1,11 @@
+﻿{
+    "build":  225,
+    "version":  "1.0.0",
+    "sha256":  "9fb1285d7f2e640a69fa02d11bef0a296dd7c2ff2426938f920e1a17310f5086",
+    "mandatory":  false,
+    "changes":  [
+                    "Build 225"
+                ],
+    "url":  "http://5.187.4.132:53319/scn/scn-windows.zip",
+    "versionString":  "1.0.0+225"
+}

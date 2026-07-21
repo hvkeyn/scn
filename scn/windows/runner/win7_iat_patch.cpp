@@ -2,62 +2,20 @@
 
 #include "win7_crash_log.h"
 #include "win7_env.h"
+#include "win7_iat_redirect.h"
 
 #include <windows.h>
-
-#include <cctype>
-#include <cstring>
 
 namespace win7_iat {
 namespace {
 
-struct RedirectRule {
-  const char* source_dll;
-  const char* target_dll;
-  const char* symbol;
-};
-
-constexpr RedirectRule kRedirects[] = {
-    {"WS2_32.dll", "scn_ws2.dll", "GetHostNameW"},
-    {"ntdll.dll", "scn_ntdll.dll", "RtlAddGrowableFunctionTable"},
-    {"ntdll.dll", "scn_ntdll.dll", "RtlDeleteGrowableFunctionTable"},
-    {"ntdll.dll", "scn_ntdll.dll", "RtlGrowFunctionTable"},
-    {"ntdll.dll", "scn_ntdll.dll", "VerSetConditionMask"},
-    {"KERNEL32.dll", "scn_kernel32.dll", "CompareStringEx"},
-    {"KERNEL32.dll", "scn_kernel32.dll", "LCMapStringEx"},
-    {"KERNEL32.dll", "scn_kernel32.dll", "GetFileInformationByHandleEx"},
-    {"KERNEL32.dll", "scn_ntdll.dll", "VerSetConditionMask"},
-    {"dxgi.dll", "scn_dxgi.dll", "CreateDXGIFactory1"},
-    {"dxgi.dll", "scn_dxgi.dll", "CreateDXGIFactory"},
-    {"d3d11.dll", "scn_d3d11.dll", "D3D11CreateDevice"},
-};
-
-constexpr DWORD kLoadDeferred = 0x00000001;  // DONT_RESOLVE_DLL_REFERENCES
-
-bool EqualsIgnoreCase(const char* a, const char* b) {
-  if (!a || !b) {
-    return false;
-  }
-  while (*a && *b) {
-    if (tolower(static_cast<unsigned char>(*a)) !=
-        tolower(static_cast<unsigned char>(*b))) {
-      return false;
-    }
-    ++a;
-    ++b;
-  }
-  return *a == *b;
-}
-
-const RedirectRule* FindRedirect(const char* source_dll, const char* symbol) {
-  for (const RedirectRule& rule : kRedirects) {
-    if (EqualsIgnoreCase(rule.source_dll, source_dll) &&
-        std::strcmp(rule.symbol, symbol) == 0) {
-      return &rule;
-    }
-  }
-  return nullptr;
-}
+// LoadLibraryEx flag: resolve the DLL's own imports normally, but search the
+// EXE directory first.  We do NOT use DONT_RESOLVE_DLL_REFERENCES here: the
+// shims (scn_ntdll/scn_kernel32/scn_ws2) are full proxies generated from
+// flutter_windows.dll's imports, so the Windows loader can resolve every
+// import on its own — including the Win8+ symbols that the proxies replace
+// with local Scn* implementations.
+constexpr DWORD kLoadWithAlteredSearchPath = 0x00000008;
 
 bool GetExeDirectory(wchar_t* out, size_t out_chars) {
   if (GetModuleFileNameW(nullptr, out, static_cast<DWORD>(out_chars)) == 0) {
@@ -84,157 +42,51 @@ bool BuildModulePath(const wchar_t* module_name, wchar_t* out, size_t out_chars)
   return true;
 }
 
-HMODULE LoadShimModule(const char* target_dll) {
-  wchar_t wide[MAX_PATH] = {};
-  MultiByteToWideChar(CP_ACP, 0, target_dll, -1, wide, MAX_PATH);
-  HMODULE module = GetModuleHandleW(wide);
-  if (!module) {
-    module = LoadLibraryW(wide);
-  }
-  return module;
-}
-
-FARPROC ResolveShimExport(HMODULE shim, const char* symbol) {
-  FARPROC address = GetProcAddress(shim, symbol);
-  if (!address && std::strcmp(symbol, "GetHostNameW") == 0) {
-    address = GetProcAddress(shim, "ScnGetHostNameW");
-  }
-  return address;
-}
-
-FARPROC ResolveImport(const char* source_dll, const char* symbol) {
-  if (const RedirectRule* rule = FindRedirect(source_dll, symbol)) {
-    HMODULE shim = LoadShimModule(rule->target_dll);
-    if (!shim) {
-      return nullptr;
-    }
-    return ResolveShimExport(shim, rule->symbol);
-  }
-
-  HMODULE source = GetModuleHandleA(source_dll);
-  if (!source) {
-    wchar_t wide[MAX_PATH] = {};
-    MultiByteToWideChar(CP_ACP, 0, source_dll, -1, wide, MAX_PATH);
-    source = LoadLibraryW(wide);
-  }
-  if (!source) {
-    return nullptr;
-  }
-  return GetProcAddress(source, symbol);
-}
-
-bool WriteIatThunk(IMAGE_THUNK_DATA* iat, ULONG_PTR value) {
-  DWORD old_protect = 0;
-  if (!VirtualProtect(&iat->u1.Function, sizeof(ULONG_PTR), PAGE_READWRITE,
-                      &old_protect)) {
-    return false;
-  }
-  iat->u1.Function = value;
-  VirtualProtect(&iat->u1.Function, sizeof(ULONG_PTR), old_protect,
-                 &old_protect);
-  return true;
-}
-
-void LogImportFailure(const char* source_dll, const char* symbol) {
+void LogModuleStep(const wchar_t* message, const wchar_t* module_name) {
   wchar_t msg[256] = {};
-  wchar_t source_wide[128] = {};
-  wchar_t symbol_wide[128] = {};
-  MultiByteToWideChar(CP_ACP, 0, source_dll, -1, source_wide, 128);
-  MultiByteToWideChar(CP_ACP, 0, symbol, -1, symbol_wide, 128);
-  wsprintfW(msg, L"IAT resolve failed %s!%s", source_wide, symbol_wide);
+  wsprintfW(msg, L"%s %s", message, module_name);
   win7_crash_log::Write(msg);
 }
 
-bool ResolveImports(HMODULE module) {
-  const auto* base = reinterpret_cast<const BYTE*>(module);
-  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-  if (dos->e_magic != IMAGE_DOS_SIGNATURE) {
-    return false;
-  }
-  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-  if (nt->Signature != IMAGE_NT_SIGNATURE) {
-    return false;
+// Hook GetProcAddress in a freshly loaded module so that ANGLE's runtime
+// D3D11/DXGI lookups are redirected to our GPU-block shims on Win7.
+void ApplyFlutterGpuHooks(HMODULE module, const wchar_t* module_name) {
+  if (!module) {
+    return;
   }
 
-  const IMAGE_DATA_DIRECTORY* import_dir =
-      &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
-  if (import_dir->VirtualAddress == 0) {
-    return true;
+  wchar_t step[128] = {};
+  wsprintfW(step, L"gpu hooks %s", module_name);
+  win7_crash_log::Write(step);
+
+  // Hostname first (STUN), then DXGI/D3D11 block for software rendering.
+  win7_iat_redirect::PatchModuleHostnameImports(module);
+  win7_iat_redirect::PatchModuleGpuImports(module);
+
+  // Hook GetProcAddress so dynamic D3D11/DXGI resolution by ANGLE also goes
+  // through the shims, and RtlAddGrowableFunctionTable/etc. via GPA resolve
+  // to scn_ntdll.
+  using PatchFlutterGpaFn = BOOL(WINAPI*)(HMODULE);
+  const HMODULE scn_ntdll = GetModuleHandleW(L"scn_ntdll.dll");
+  const PatchFlutterGpaFn patch =
+      scn_ntdll ? reinterpret_cast<PatchFlutterGpaFn>(
+                      GetProcAddress(scn_ntdll, "ScnPatchFlutterGetProcAddress"))
+                : nullptr;
+  if (!patch || !patch(module)) {
+    win7_crash_log::Write(L"gpa post-load patch failed");
+  } else {
+    win7_crash_log::Write(L"gpa post-load patch ok");
   }
-
-  auto* import_desc = reinterpret_cast<IMAGE_IMPORT_DESCRIPTOR*>(
-      const_cast<BYTE*>(base + import_dir->VirtualAddress));
-  for (; import_desc->Name; ++import_desc) {
-    const char* source_dll =
-        reinterpret_cast<const char*>(base + import_desc->Name);
-    auto* lookup = reinterpret_cast<IMAGE_THUNK_DATA*>(
-        const_cast<BYTE*>(base + import_desc->OriginalFirstThunk));
-    auto* iat = reinterpret_cast<IMAGE_THUNK_DATA*>(
-        const_cast<BYTE*>(base + import_desc->FirstThunk));
-    if (!import_desc->OriginalFirstThunk) {
-      lookup = iat;
-    }
-
-    for (; lookup->u1.AddressOfData; ++lookup, ++iat) {
-      const char* symbol = nullptr;
-      if (IMAGE_SNAP_BY_ORDINAL(lookup->u1.Ordinal)) {
-        if (iat->u1.Function != 0) {
-          continue;
-        }
-        HMODULE source = GetModuleHandleA(source_dll);
-        if (!source) {
-          source = LoadLibraryA(source_dll);
-        }
-        if (!source) {
-          LogImportFailure(source_dll, "#ordinal");
-          return false;
-        }
-        FARPROC address = GetProcAddress(
-            source, reinterpret_cast<LPCSTR>(lookup->u1.Ordinal & 0xFFFF));
-        if (!address) {
-          LogImportFailure(source_dll, "#ordinal");
-          return false;
-        }
-        if (!WriteIatThunk(iat, reinterpret_cast<ULONG_PTR>(address))) {
-          return false;
-        }
-        continue;
-      }
-
-      const auto* import_by_name = reinterpret_cast<IMAGE_IMPORT_BY_NAME*>(
-          const_cast<BYTE*>(base + lookup->u1.AddressOfData));
-      symbol = reinterpret_cast<const char*>(import_by_name->Name);
-
-      const bool redirected = FindRedirect(source_dll, symbol) != nullptr;
-      if (!redirected && iat->u1.Function != 0) {
-        continue;
-      }
-
-      FARPROC address = ResolveImport(source_dll, symbol);
-      if (!address) {
-        LogImportFailure(source_dll, symbol);
-        return false;
-      }
-      if (!WriteIatThunk(iat, reinterpret_cast<ULONG_PTR>(address))) {
-        return false;
-      }
-    }
-  }
-  return true;
 }
 
-bool RunDllMainAttach(HMODULE module) {
-  const auto* base = reinterpret_cast<const BYTE*>(module);
-  const auto* dos = reinterpret_cast<const IMAGE_DOS_HEADER*>(base);
-  const auto* nt = reinterpret_cast<const IMAGE_NT_HEADERS*>(base + dos->e_lfanew);
-  if (nt->OptionalHeader.AddressOfEntryPoint == 0) {
-    return true;
+void ApplyWebRtcHostnameOnly(HMODULE module, const wchar_t* module_name) {
+  if (!module) {
+    return;
   }
-
-  using DllMainFn = BOOL(WINAPI*)(HINSTANCE, DWORD, LPVOID);
-  auto* entry = reinterpret_cast<DllMainFn>(
-      const_cast<BYTE*>(base + nt->OptionalHeader.AddressOfEntryPoint));
-  return entry(reinterpret_cast<HINSTANCE>(module), DLL_PROCESS_ATTACH, nullptr) != FALSE;
+  wchar_t step[128] = {};
+  wsprintfW(step, L"hostname hooks %s", module_name);
+  win7_crash_log::Write(step);
+  win7_iat_redirect::PatchModuleHostnameImports(module);
 }
 
 }  // namespace
@@ -247,33 +99,26 @@ HMODULE LoadModuleWithWin7Imports(const wchar_t* module_name) {
 
   wchar_t path[MAX_PATH] = {};
   if (!BuildModulePath(module_name, path, MAX_PATH)) {
-    win7_crash_log::Write(L"IAT module path failed");
+    win7_crash_log::Write(L"module path failed");
     return nullptr;
   }
 
-  HMODULE module = LoadLibraryExW(path, nullptr, kLoadDeferred);
+  LogModuleStep(L"LoadLibrary", path);
+  // Normal load: the proxy shims re-export every needed symbol, so the loader
+  // resolves imports the standard way.  This avoids the crashes that
+  // DONT_RESOLVE_DLL_REFERENCES + manual IAT fixups caused on Win7.
+  HMODULE module = LoadLibraryExW(path, nullptr, kLoadWithAlteredSearchPath);
+  if (!module) {
+    module = LoadLibraryW(path);
+  }
   if (!module) {
     wchar_t msg[256] = {};
-    wsprintfW(msg, L"deferred load failed %s err=%lu", path, GetLastError());
+    wsprintfW(msg, L"load failed %s err=%lu", path, GetLastError());
     win7_crash_log::Write(msg);
     return nullptr;
   }
 
-  if (!ResolveImports(module)) {
-    win7_crash_log::Write(L"IAT resolve failed");
-    FreeLibrary(module);
-    return nullptr;
-  }
-
-  if (!RunDllMainAttach(module)) {
-    win7_crash_log::Write(L"DllMain failed");
-    FreeLibrary(module);
-    return nullptr;
-  }
-
-  wchar_t msg[256] = {};
-  wsprintfW(msg, L"%s loaded with Win7 IAT", module_name);
-  win7_crash_log::Write(msg);
+  LogModuleStep(L"loaded", module_name);
   return module;
 }
 
@@ -282,26 +127,91 @@ bool PatchProcessImports() {
     return true;
   }
 
-  win7_crash_log::Write(L"IAT patch begin");
+  win7_crash_log::Write(L"Win7 module preload begin");
 
+  // Preload the engine and every plugin that statically imports Win8+ symbols.
+  // Loading them here (instead of lazily) lets us apply GPU hooks to
+  // flutter_windows.dll before the engine spins up the renderer.
+  // Win7: skip libwebrtc/tray plugins — they crash after the first frame.
+  // Win7: only preload the Flutter engine DLL (plugins register later on Win10+).
   static const wchar_t* kModules[] = {
       L"flutter_windows.dll",
-      L"libwebrtc.dll",
-      L"flutter_webrtc_plugin.dll",
-      L"screen_retriever_plugin.dll",
-      L"tray_manager_plugin.dll",
-      L"window_manager_plugin.dll",
   };
 
-  for (const wchar_t* module : kModules) {
-    if (!LoadModuleWithWin7Imports(module)) {
-      win7_crash_log::Write(L"IAT patch failed");
+  static const wchar_t* kGpuHookModules[] = {
+      L"flutter_windows.dll",
+  };
+
+  for (const wchar_t* module_name : kModules) {
+    wchar_t step[128] = {};
+    wsprintfW(step, L"preload %s", module_name);
+    win7_crash_log::Write(step);
+    if (!LoadModuleWithWin7Imports(module_name)) {
+      win7_crash_log::Write(L"Win7 module preload failed");
       return false;
+    }
+
+    const HMODULE loaded = GetModuleHandleW(module_name);
+    for (const wchar_t* hook_name : kGpuHookModules) {
+      if (loaded && _wcsicmp(module_name, hook_name) == 0) {
+        ApplyFlutterGpuHooks(loaded, module_name);
+        break;
+      }
     }
   }
 
-  win7_crash_log::Write(L"IAT patch done");
+  win7_crash_log::Write(L"Win7 module preload done");
   return true;
+}
+
+void ApplyWebRtcHostnameHooks() {
+  if (!win7_env::IsWindows7()) {
+    return;
+  }
+
+  static bool libwebrtc_done = false;
+  static bool plugin_done = false;
+
+  if (!libwebrtc_done) {
+    if (const HMODULE libwebrtc = GetModuleHandleW(L"libwebrtc.dll")) {
+      ApplyWebRtcHostnameOnly(libwebrtc, L"libwebrtc.dll");
+      libwebrtc_done = true;
+    }
+  }
+  if (!plugin_done) {
+    if (const HMODULE plugin = GetModuleHandleW(L"flutter_webrtc_plugin.dll")) {
+      ApplyWebRtcHostnameOnly(plugin, L"flutter_webrtc_plugin.dll");
+      plugin_done = true;
+    }
+  }
+}
+
+void ApplyWebRtcGpuHooks() {
+  if (!win7_env::IsWindows7()) {
+    return;
+  }
+
+  static bool libwebrtc_done = false;
+  static bool plugin_done = false;
+
+  // Hostname first (idempotent), then full DXGI/D3D11 + GPA block.
+  ApplyWebRtcHostnameHooks();
+
+  if (!libwebrtc_done) {
+    if (const HMODULE libwebrtc = GetModuleHandleW(L"libwebrtc.dll")) {
+      win7_crash_log::Write(L"gpu hooks libwebrtc.dll (deferred until capture)");
+      ApplyFlutterGpuHooks(libwebrtc, L"libwebrtc.dll");
+      libwebrtc_done = true;
+    }
+  }
+  if (!plugin_done) {
+    if (const HMODULE plugin = GetModuleHandleW(L"flutter_webrtc_plugin.dll")) {
+      win7_crash_log::Write(
+          L"gpu hooks flutter_webrtc_plugin.dll (deferred until capture)");
+      ApplyFlutterGpuHooks(plugin, L"flutter_webrtc_plugin.dll");
+      plugin_done = true;
+    }
+  }
 }
 
 }  // namespace win7_iat

@@ -16,6 +16,10 @@ import 'package:scn/services/remote_desktop/input_injector/input_injector.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/services/remote_desktop/secure_desktop_override.dart';
 import 'package:scn/utils/logger.dart';
+import 'package:scn/utils/rd_test_env.dart';
+import 'package:scn/utils/win7_platform.dart';
+import 'package:scn/utils/win7_rd_capture.dart';
+import 'package:scn/utils/win7_webrtc.dart';
 
 /// Внутреннее представление активной хост-сессии.
 class _HostSession {
@@ -73,6 +77,22 @@ class _HostSession {
 
   /// Таймер периодической синхронизации буфера обмена (1.5 c).
   Timer? clipboardPollTimer;
+
+  /// Win7 frame transport (GDI JPEG over signaling) — без WebRTC.
+  bool useFramesTransport = false;
+  Timer? frameTimer;
+  bool frameBusy = false;
+  int frameJpegQuality = 50;
+  int frameMaxWidth = 1280;
+  int frameTargetFps = 6;
+  int framesSent = 0;
+  int lastFrameWidth = 0;
+  int lastFrameHeight = 0;
+  int lastFrameFingerprint = 0;
+  int frameBytesSentWindow = 0;
+  /// Capture target: >=0 physical monitor index, -1 = all displays.
+  int frameMonitorIndex = 0;
+  List<Win7MonitorInfo> frameMonitors = const [];
 
   _HostSession({
     required this.sessionId,
@@ -536,7 +556,13 @@ class RemoteDesktopHostService extends ChangeNotifier {
   Future<void> _startHostMedia(_HostSession session) async {
     try {
       AppLogger.log('RD host: starting media for session ${session.sessionId} '
-          '(audio=${session.grantsAudio}, fps=${_settings.defaultFps})');
+          '(audio=${session.grantsAudio}, fps=${_settings.defaultFps}, '
+          'frames=$useRdFramesTransport win7=$isScnWin7)');
+
+      if (useRdFramesTransport) {
+        await _startFrameHostMedia(session);
+        return;
+      }
 
       final iceServers = session.iceServers ??
           <Map<String, dynamic>>[
@@ -547,11 +573,15 @@ class RemoteDesktopHostService extends ChangeNotifier {
               ],
             },
           ];
-      final pc = await createPeerConnection({
-        'iceServers': iceServers,
-        'sdpSemantics': 'unified-plan',
-      });
+      AppLogger.log(
+          'RD host: createPeerConnection begin (iceServers=${iceServers.length})');
+      final pc = await createScnPeerConnection(
+        iceServers: iceServers,
+        offerToReceiveAudio: false,
+        offerToReceiveVideo: false,
+      );
       session.pc = pc;
+      AppLogger.log('RD host: createPeerConnection ok');
 
       // На Windows/Linux/macOS flutter_webrtc требует, чтобы источник
       // экрана был получен через desktopCapturer.getSources() и его deviceId
@@ -618,6 +648,7 @@ class RemoteDesktopHostService extends ChangeNotifier {
             // viewer'a не попадают в SCN UI (в 1 пиксель не попасть),
             // (3) свернётся при завершении сессии обратно.
             HostWindowManager.onSessionStarted();
+            unawaited(_notifyRemoteConnected(session));
             // Если пользователь разрешил управлять окнами UAC — временно
             // отключаем Secure Desktop. Без этого viewer теряет управление,
             // как только Windows показывает UAC-окно.
@@ -701,6 +732,221 @@ class RemoteDesktopHostService extends ChangeNotifier {
       await _failSession(
           session, 'Внутренняя ошибка при запуске стриминга экрана: $e', st);
     }
+  }
+
+  /// Win7: GDI JPEG frames over existing RD WebSocket / relay (no WebRTC).
+  Future<void> _startFrameHostMedia(_HostSession session) async {
+    AppLogger.log('RD host: frame transport start for ${session.sessionId}');
+    session.useFramesTransport = true;
+    // Speed-first defaults for window work over WAN; Clarity available in UI.
+    session.frameJpegQuality = 62;
+    session.frameMaxWidth = 1280;
+    session.frameTargetFps = _settings.defaultFps.clamp(10, 14);
+    session.framesSent = 0;
+    session.frameBytesSentWindow = 0;
+    session.lastFrameFingerprint = 0;
+    session.frameMonitors = await Win7RdCapture.listMonitors();
+    session.frameMonitorIndex = 0;
+    for (final m in session.frameMonitors) {
+      if (m.index >= 0 && m.primary) {
+        session.frameMonitorIndex = m.index;
+        break;
+      }
+    }
+    _applyFrameMonitorToInjector(session);
+    session.status = RemoteDesktopSessionStatus.streaming;
+    HostWindowManager.onSessionStarted();
+    unawaited(_notifyRemoteConnected(session));
+    if (session.grantsControl && _settings.allowUacInteraction) {
+      unawaited(_uacOverride.engage());
+    }
+    _startClipboardPolling(session);
+
+    AppLogger.log(
+        'RD host: sending hostReady (frames) monitors=${session.frameMonitors.length} '
+        'selected=${session.frameMonitorIndex}');
+    _sendSignalToViewer(
+        session,
+        RemoteDesktopSignal(
+          type: RemoteDesktopSignalType.hostReady,
+          payload: {
+            'transport': 'frames',
+            'audioEnabled': false,
+            'controlAllowed': session.grantsControl,
+            'preferredCodec': 'jpeg',
+            'fps': session.frameTargetFps,
+            'monitorIndex': session.frameMonitorIndex,
+            'monitors':
+                session.frameMonitors.map((m) => m.toJson()).toList(growable: false),
+          },
+        ));
+
+    final intervalMs = (1000 / session.frameTargetFps).round().clamp(55, 1000);
+    session.frameTimer?.cancel();
+    session.frameTimer =
+        Timer.periodic(Duration(milliseconds: intervalMs), (_) {
+      unawaited(_captureAndSendFrame(session));
+    });
+    _startFrameStatsTimer(session);
+    notifyListeners();
+  }
+
+  Future<void> _notifyRemoteConnected(_HostSession session) async {
+    final alias = session.viewerAlias.trim().isEmpty
+        ? session.viewerDeviceId
+        : session.viewerAlias;
+    final ok = await Win7RdCapture.showNotifyBalloon(
+      title: 'SCN Remote Desktop',
+      body: 'Подключились: $alias',
+    );
+    AppLogger.log('RD host: connect balloon ok=$ok viewer=$alias');
+  }
+
+  void _applyFrameMonitorToInjector(_HostSession session) {
+    Win7MonitorInfo? selected;
+    for (final m in session.frameMonitors) {
+      if (m.index == session.frameMonitorIndex) {
+        selected = m;
+        break;
+      }
+    }
+    if (selected == null && session.frameMonitorIndex >= 0) {
+      for (final m in session.frameMonitors) {
+        if (m.index >= 0 && m.primary) {
+          selected = m;
+          session.frameMonitorIndex = m.index;
+          break;
+        }
+      }
+    }
+    if (selected == null) {
+      for (final m in session.frameMonitors) {
+        if (m.index >= 0) {
+          selected = m;
+          session.frameMonitorIndex = m.index;
+          break;
+        }
+      }
+    }
+    if (selected != null) {
+      _inputInjector.setCaptureRect(
+        left: selected.left,
+        top: selected.top,
+        width: selected.width,
+        height: selected.height,
+      );
+      AppLogger.log(
+          'RD host: capture rect index=${selected.index} '
+          '${selected.width}x${selected.height} @${selected.left},${selected.top}');
+    }
+  }
+
+  Future<void> _applyMonitorChange(
+      _HostSession session, Map<String, dynamic> payload) async {
+    if (!session.useFramesTransport) return;
+    final idx = (payload['monitorIndex'] as num?)?.toInt();
+    if (idx == null) return;
+    final exists = session.frameMonitors.any((m) => m.index == idx);
+    if (!exists) {
+      AppLogger.log('RD host: unknown monitorIndex=$idx');
+      return;
+    }
+    session.frameMonitorIndex = idx;
+    session.lastFrameFingerprint = 0;
+    _applyFrameMonitorToInjector(session);
+    AppLogger.log('RD host: switched to monitorIndex=$idx');
+    notifyListeners();
+  }
+
+  Future<void> _captureAndSendFrame(_HostSession session) async {
+    if (!session.useFramesTransport) return;
+    if (session.status != RemoteDesktopSessionStatus.streaming) return;
+    if (session.frameBusy) return;
+    session.frameBusy = true;
+    try {
+      final frame = await Win7RdCapture.captureJpeg(
+        quality: session.frameJpegQuality,
+        maxWidth: session.frameMaxWidth,
+        monitorIndex: session.frameMonitorIndex,
+      );
+      if (frame == null) return;
+      if (session.status != RemoteDesktopSessionStatus.streaming) return;
+      // Skip identical frames to free WAN bandwidth for input events.
+      final fp = _jpegFingerprint(frame.jpeg);
+      if (fp == session.lastFrameFingerprint && session.framesSent > 0) {
+        return;
+      }
+      session.lastFrameFingerprint = fp;
+      session.lastFrameWidth = frame.width;
+      session.lastFrameHeight = frame.height;
+      session.framesSent++;
+      session.frameBytesSentWindow += frame.jpeg.length;
+      _sendSignalToViewer(
+          session,
+          RemoteDesktopSignal(
+            type: RemoteDesktopSignalType.frame,
+            payload: {
+              'fmt': 'jpeg',
+              'w': frame.width,
+              'h': frame.height,
+              'ts': DateTime.now().microsecondsSinceEpoch,
+              'data': base64Encode(frame.jpeg),
+            },
+          ));
+    } catch (e, st) {
+      AppLogger.log('RD host: frame capture/send failed: $e\n$st');
+    } finally {
+      session.frameBusy = false;
+    }
+  }
+
+  int _jpegFingerprint(List<int> jpeg) {
+    if (jpeg.isEmpty) return 0;
+    var h = jpeg.length;
+    final n = jpeg.length;
+    for (var i = 0; i < 32 && i < n; i++) {
+      h = 0x1fffffff & (h * 31 + jpeg[i]);
+    }
+    for (var i = 0; i < 32 && i < n; i++) {
+      h = 0x1fffffff & (h * 31 + jpeg[n - 1 - i]);
+    }
+    return h;
+  }
+
+  void _startFrameStatsTimer(_HostSession session) {
+    session.statsTimer?.cancel();
+    session.statsTimer = Timer.periodic(const Duration(seconds: 2), (_) {
+      if (!session.useFramesTransport) return;
+      final bytes = session.frameBytesSentWindow;
+      session.frameBytesSentWindow = 0;
+      final kbps = bytes * 8 / 1000 / 2;
+      final stats = RemoteDesktopStats(
+        videoBitrateKbps: kbps,
+        audioBitrateKbps: 0,
+        framesPerSecond: session.frameTargetFps.toDouble(),
+        packetsLost: 0,
+        roundTripTimeMs: 0,
+        frameWidth: session.lastFrameWidth,
+        frameHeight: session.lastFrameHeight,
+        updatedAt: DateTime.now(),
+      );
+      session.lastStats = stats;
+      _sendSignalToViewer(
+          session,
+          RemoteDesktopSignal(
+            type: RemoteDesktopSignalType.stats,
+            payload: {
+              'videoKbps': stats.videoBitrateKbps,
+              'audioKbps': 0,
+              'fps': stats.framesPerSecond,
+              'lost': 0,
+              'rtt': 0,
+              'width': stats.frameWidth,
+              'height': stats.frameHeight,
+            },
+          ));
+      notifyListeners();
+    });
   }
 
   /// Захватывает экран хоста.
@@ -848,6 +1094,15 @@ class RemoteDesktopHostService extends ChangeNotifier {
       case RemoteDesktopSignalType.qualityChange:
         await _applyQualityChange(session, signal.payload);
         break;
+      case RemoteDesktopSignalType.input:
+        _onInputEvent(session, jsonEncode(signal.payload));
+        break;
+      case RemoteDesktopSignalType.clipboard:
+        _onViewerClipboardUpdate(session, signal.payload);
+        break;
+      case RemoteDesktopSignalType.monitorChange:
+        await _applyMonitorChange(session, signal.payload);
+        break;
       default:
         break;
     }
@@ -917,26 +1172,43 @@ class RemoteDesktopHostService extends ChangeNotifier {
     session.clipboardPollTimer =
         Timer.periodic(const Duration(milliseconds: 1500), (_) async {
       if (session.status != RemoteDesktopSessionStatus.streaming) return;
-      final channel = session.inputChannel;
-      if (channel == null ||
-          channel.state != RTCDataChannelState.RTCDataChannelOpen) {
-        return;
-      }
       try {
         final data = await Clipboard.getData(Clipboard.kTextPlain);
         final text = data?.text;
         if (text == null || text.isEmpty) return;
         if (text == session.lastClipboardText) return;
         session.lastClipboardText = text;
-        channel.send(RTCDataChannelMessage(jsonEncode({
-          'type': 'clipboardUpdate',
-          'text': text,
-          'ts': DateTime.now().microsecondsSinceEpoch,
-        })));
+        if (!_sendClipboardToViewer(session, text)) return;
         AppLogger.log(
             'RD host: clipboard poll sent ${text.length} chars to viewer');
       } catch (_) {}
     });
+  }
+
+  bool _sendClipboardToViewer(_HostSession session, String text) {
+    if (session.useFramesTransport) {
+      _sendSignalToViewer(
+          session,
+          RemoteDesktopSignal(
+            type: RemoteDesktopSignalType.clipboard,
+            payload: {
+              'text': text,
+              'ts': DateTime.now().microsecondsSinceEpoch,
+            },
+          ));
+      return true;
+    }
+    final channel = session.inputChannel;
+    if (channel == null ||
+        channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+      return false;
+    }
+    channel.send(RTCDataChannelMessage(jsonEncode({
+      'type': 'clipboardUpdate',
+      'text': text,
+      'ts': DateTime.now().microsecondsSinceEpoch,
+    })));
+    return true;
   }
 
   void _maybeSendClipboardUpdate(_HostSession session, RemoteInputEvent event) {
@@ -956,16 +1228,9 @@ class RemoteDesktopHostService extends ChangeNotifier {
         final text = data?.text;
         if (text == null || text == session.lastClipboardText) return;
         session.lastClipboardText = text;
-        final channel = session.inputChannel;
-        if (channel == null ||
-            channel.state != RTCDataChannelState.RTCDataChannelOpen) {
+        if (!_sendClipboardToViewer(session, text)) {
           return;
         }
-        channel.send(RTCDataChannelMessage(jsonEncode({
-          'type': 'clipboardUpdate',
-          'text': text,
-          'ts': DateTime.now().microsecondsSinceEpoch,
-        })));
         AppLogger.log(
             'RD host: sent clipboard update to viewer (${text.length} chars)');
       } catch (e) {
@@ -1027,6 +1292,38 @@ class RemoteDesktopHostService extends ChangeNotifier {
 
   Future<void> _applyQualityChange(
       _HostSession session, Map<String, dynamic> payload) async {
+    if (session.useFramesTransport) {
+      final bitrateKbps = (payload['bitrateKbps'] as num?)?.toInt();
+      final maxFps = (payload['fps'] as num?)?.toInt();
+      if (bitrateKbps != null && bitrateKbps > 0) {
+        // Map bitrate request roughly onto JPEG quality / resolution.
+        if (bitrateKbps < 600) {
+          session.frameJpegQuality = 40;
+          session.frameMaxWidth = 960;
+        } else if (bitrateKbps < 1400) {
+          session.frameJpegQuality = 58;
+          session.frameMaxWidth = 1280;
+        } else {
+          // Clarity / poor-vision mode
+          session.frameJpegQuality = 88;
+          session.frameMaxWidth = 1920;
+        }
+      }
+      if (maxFps != null && maxFps > 0) {
+        session.frameTargetFps = maxFps.clamp(1, 18);
+        final intervalMs =
+            (1000 / session.frameTargetFps).round().clamp(55, 1000);
+        session.frameTimer?.cancel();
+        session.frameTimer =
+            Timer.periodic(Duration(milliseconds: intervalMs), (_) {
+          unawaited(_captureAndSendFrame(session));
+        });
+      }
+      AppLogger.log(
+          'RD host: frames quality q=${session.frameJpegQuality} '
+          'maxW=${session.frameMaxWidth} fps=${session.frameTargetFps}');
+      return;
+    }
     final pc = session.pc;
     if (pc == null) return;
     final bitrateKbps = payload['bitrateKbps'] as int?;
@@ -1219,6 +1516,9 @@ class RemoteDesktopHostService extends ChangeNotifier {
     session.wsConnectWatchdog = null;
     session.clipboardPollTimer?.cancel();
     session.clipboardPollTimer = null;
+    session.frameTimer?.cancel();
+    session.frameTimer = null;
+    session.frameBusy = false;
     if (wasStreaming) {
       HostWindowManager.onSessionEnded();
     }

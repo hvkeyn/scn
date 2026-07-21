@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
+import 'package:scn/services/remote_desktop/remote_desktop_relay_service.dart';
 import 'package:scn/utils/logger.dart';
 
 class UpdateInfo {
@@ -74,9 +75,29 @@ class UpdateInfo {
 }
 
 class UpdateService {
-  static const String updateManifestUrl =
+  /// Same host as WAN RD relay (`ws://…/ws` → `http://…/scn/update.json`).
+  /// HTTP works on Win7 (no Dart TLS abort).
+  static String get updateManifestUrl =>
+      manifestUrlFromRelayWs(defaultRemoteDesktopRelayUrl);
+
+  static const String legacyHttpsManifestUrl =
       'https://drawrandom.telsys.online/scn/update.json';
-  static const Duration _timeout = Duration(seconds: 10);
+
+  static const Duration _timeout = Duration(seconds: 15);
+  static const Duration _downloadTimeout = Duration(minutes: 15);
+
+  static String manifestUrlFromRelayWs(String relayWsUrl) {
+    var base = relayWsUrl.trim();
+    if (base.startsWith('ws://')) {
+      base = 'http://${base.substring(5)}';
+    } else if (base.startsWith('wss://')) {
+      // Win7 cannot use TLS; fall back to cleartext host if possible.
+      base = 'http://${base.substring(6)}';
+    }
+    base = base.replaceFirst(RegExp(r'/ws/?$'), '');
+    if (base.endsWith('/')) base = base.substring(0, base.length - 1);
+    return '$base/scn/update.json';
+  }
 
   Future<UpdateInfo?> checkForUpdate() async {
     if (!Platform.isWindows) return null;
@@ -99,21 +120,32 @@ class UpdateService {
   }
 
   Future<UpdateInfo?> fetchLatest() async {
-    try {
-      final response = await http
-          .get(Uri.parse(updateManifestUrl))
-          .timeout(_timeout);
-      if (response.statusCode != 200) {
-        AppLogger.log('Update manifest HTTP ${response.statusCode}');
-        return null;
+    final urls = <String>[
+      updateManifestUrl,
+      if (!identical(updateManifestUrl, legacyHttpsManifestUrl))
+        legacyHttpsManifestUrl,
+    ];
+    // Prefer relay HTTP; skip legacy HTTPS on Win7 (TLS abort).
+    final win7 = Platform.environment['SCN_WIN7'] == '1';
+    for (final url in urls) {
+      if (win7 && url.startsWith('https://')) {
+        AppLogger.log('UpdateService: skip HTTPS on Win7: $url');
+        continue;
       }
-      final jsonData = jsonDecode(response.body) as Map<String, dynamic>;
-      final info = UpdateInfo.fromJson(jsonData);
-      return info;
-    } catch (e) {
-      AppLogger.log('Failed to fetch update manifest: $e');
-      return null;
+      try {
+        AppLogger.log('UpdateService: fetch $url');
+        final response = await http.get(Uri.parse(url)).timeout(_timeout);
+        if (response.statusCode != 200) {
+          AppLogger.log('Update manifest HTTP ${response.statusCode} for $url');
+          continue;
+        }
+        final jsonData = jsonDecode(response.body) as Map<String, dynamic>;
+        return UpdateInfo.fromJson(jsonData);
+      } catch (e) {
+        AppLogger.log('Failed to fetch update manifest ($url): $e');
+      }
     }
+    return null;
   }
 
   Future<List<String>> loadChanges(UpdateInfo info) async {
@@ -123,10 +155,13 @@ class UpdateService {
     if (info.changesUrl == null || info.changesUrl!.isEmpty) {
       return const [];
     }
+    if (Platform.environment['SCN_WIN7'] == '1' &&
+        info.changesUrl!.startsWith('https://')) {
+      return const [];
+    }
     try {
-      final response = await http
-          .get(Uri.parse(info.changesUrl!))
-          .timeout(_timeout);
+      final response =
+          await http.get(Uri.parse(info.changesUrl!)).timeout(_timeout);
       if (response.statusCode != 200) return const [];
       final lines = const LineSplitter()
           .convert(response.body)
@@ -141,6 +176,11 @@ class UpdateService {
 
   Future<void> downloadAndInstall(UpdateInfo info) async {
     if (!Platform.isWindows) return;
+    if (Platform.environment['SCN_WIN7'] == '1' &&
+        info.url.startsWith('https://')) {
+      throw Exception(
+          'HTTPS updates are not supported on Windows 7. Use HTTP relay URL.');
+    }
     final tempDir = await getTemporaryDirectory();
     final updateDir = Directory(p.join(
       tempDir.path,
@@ -188,16 +228,22 @@ class UpdateService {
 
   Future<void> _downloadFile(String url, String targetPath) async {
     final client = HttpClient();
-    final request = await client.getUrl(Uri.parse(url));
-    final response = await request.close().timeout(_timeout);
-    if (response.statusCode != 200) {
-      throw Exception('Failed to download update: ${response.statusCode}');
+    client.connectionTimeout = const Duration(seconds: 30);
+    try {
+      final request = await client.getUrl(Uri.parse(url));
+      final response = await request.close();
+      if (response.statusCode != 200) {
+        throw Exception('Failed to download update: ${response.statusCode}');
+      }
+      final file = File(targetPath);
+      final sink = file.openWrite();
+      // Large portable zips — no short timeout on body stream.
+      await response.pipe(sink).timeout(_downloadTimeout);
+      await sink.flush();
+      await sink.close();
+    } finally {
+      client.close(force: true);
     }
-    final file = File(targetPath);
-    final sink = file.openWrite();
-    await response.pipe(sink);
-    await sink.flush();
-    await sink.close();
   }
 
   Future<String> _sha256OfFile(String path) async {

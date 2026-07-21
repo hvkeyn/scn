@@ -211,11 +211,16 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     final size = renderBox.size;
     if (size.width == 0 || size.height == 0) return null;
 
+    // Frames mode: Listener сидит ровно на картинке (AspectRatio), без
+    // letterbox — localPosition уже в координатах кадра.
+    if (_client.usesFramesTransport) {
+      final dx = (local.dx / size.width).clamp(0.0, 1.0);
+      final dy = (local.dy / size.height).clamp(0.0, 1.0);
+      return Offset(dx, dy);
+    }
+
     // RTCVideoView рисует поток с objectFit=contain. Если соотношение сторон
     // viewer-окна не совпадает с удаленным экраном, появляются черные поля.
-    // Координаты мыши должны считаться только по реальному прямоугольнику
-    // видео, иначе клик визуально уезжает вверх/вбок и не попадает в кнопки
-    // свернуть/закрыть у окон на удаленной машине.
     final videoW = _client.videoRenderer.videoWidth > 0
         ? _client.videoRenderer.videoWidth
         : (_client.session?.stats?.frameWidth ?? 0);
@@ -255,17 +260,12 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     if (!_controlActive) return;
     final n = _normalize(local);
     if (n == null) return;
-    // Жёсткий throttle по времени: не чаще 60 событий/сек. Без этого онHover
-    // / onPointerMove на быстрой мыши бомбят DataChannel сотнями событий в
-    // секунду, channel.send() начинает блокировать UI thread, и Flutter
-    // успевает пропустить onPointerUp — Windows не отпускает mouse capture
-    // окна, и курсор "залипает" внутри viewer'а. Симптом: всё видно, но
-    // мышь перестала реагировать на машине viewer.
+    // Throttle ~120 Hz — enough for smooth cursor without flooding the pipe.
     final nowMs = DateTime.now().millisecondsSinceEpoch;
-    if (nowMs - _lastMoveSentAtMs < 16) return;
+    if (nowMs - _lastMoveSentAtMs < 8) return;
     if (_lastSentMove != null) {
-      if ((n.dx - _lastSentMove!.dx).abs() < 0.001 &&
-          (n.dy - _lastSentMove!.dy).abs() < 0.001) {
+      if ((n.dx - _lastSentMove!.dx).abs() < 0.0005 &&
+          (n.dy - _lastSentMove!.dy).abs() < 0.0005) {
         return;
       }
     }
@@ -297,6 +297,15 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     _pressedMouseButtons = ev.buttons;
     if (newlyPressed == 0) return;
     final ts = DateTime.now().microsecondsSinceEpoch;
+    // Always place cursor first (bypass move throttle) so clicks register.
+    _lastSentMove = n;
+    _lastMoveSentAtMs = DateTime.now().millisecondsSinceEpoch;
+    _client.sendInputEvent(RemoteInputEvent(
+      kind: RemoteInputEventKind.mouseMove,
+      x: n.dx,
+      y: n.dy,
+      timestampUs: ts,
+    ));
     for (final b in const [
       kPrimaryMouseButton,
       kSecondaryMouseButton,
@@ -307,8 +316,8 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       if ((newlyPressed & b) != 0) {
         _client.sendInputEvent(RemoteInputEvent(
           kind: RemoteInputEventKind.mouseDown,
-          x: n?.dx,
-          y: n?.dy,
+          x: n.dx,
+          y: n.dy,
           button: _mapButton(b),
           timestampUs: ts,
         ));
@@ -569,6 +578,73 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
           icon: const Icon(Icons.warning_amber),
           onPressed: _sendCtrlAltDel,
         ),
+      if (_client.usesFramesTransport && _client.monitors.isNotEmpty)
+        PopupMenuButton<int>(
+          tooltip: 'Select display',
+          initialValue: _client.monitorIndex,
+          onSelected: (idx) => _client.requestMonitor(idx),
+          itemBuilder: (_) => _client.monitors
+              .map(
+                (m) => PopupMenuItem<int>(
+                  value: m.index,
+                  child: Row(
+                    children: [
+                      Icon(
+                        m.index == _client.monitorIndex
+                            ? Icons.check
+                            : Icons.desktop_windows_outlined,
+                        size: 18,
+                        color: Colors.white70,
+                      ),
+                      const SizedBox(width: 8),
+                      Flexible(
+                        child: Text(
+                          m.name,
+                          style: const TextStyle(color: Colors.white),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              )
+              .toList(),
+          icon: const Icon(Icons.monitor),
+        ),
+      if (_client.usesFramesTransport)
+        PopupMenuButton<String>(
+          tooltip: 'Picture quality',
+          onSelected: (v) {
+            switch (v) {
+              case 'fast':
+                _client.requestQuality(bitrateKbps: 500, fps: 16);
+                break;
+              case 'balanced':
+                _client.requestQuality(bitrateKbps: 1200, fps: 12);
+                break;
+              case 'clarity':
+              default:
+                _client.requestQuality(bitrateKbps: 4000, fps: 10);
+                break;
+            }
+          },
+          itemBuilder: (_) => const [
+            PopupMenuItem(
+              value: 'clarity',
+              child: Text('Clarity (best text)',
+                  style: TextStyle(color: Colors.white)),
+            ),
+            PopupMenuItem(
+              value: 'balanced',
+              child:
+                  Text('Balanced', style: TextStyle(color: Colors.white)),
+            ),
+            PopupMenuItem(
+              value: 'fast',
+              child: Text('Fast', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+          icon: const Icon(Icons.high_quality_outlined),
+        ),
       IconButton(
         tooltip: _showStats ? 'Hide stats' : 'Show stats',
         icon: Icon(_showStats ? Icons.bar_chart : Icons.bar_chart_outlined),
@@ -630,7 +706,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     final closedWithoutVideo = session != null &&
         (session.status == RemoteDesktopSessionStatus.closed ||
             session.status == RemoteDesktopSessionStatus.failed) &&
-        _client.videoRenderer.srcObject == null;
+        (_client.usesFramesTransport
+            ? _client.latestFrameBytes == null
+            : _client.videoRenderer.srcObject == null);
     if (closedWithoutVideo) {
       return Center(
         child: Padding(
@@ -658,30 +736,82 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       );
     }
 
-    Widget videoView = RTCVideoView(
-      _client.videoRenderer,
-      key: _videoKey,
-      objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
-    );
-
-    if (_controlActive) {
-      // ВАЖНО: используем ОДИН Listener для всех pointer events.
-      // MouseRegion+Listener вместе создавали конкуренцию: onHover и
-      // onPointerHover оба могли стрелять для одного движения, удваивая
-      // нагрузку на DataChannel.
-      videoView = MouseRegion(
-        cursor: SystemMouseCursors.precise,
-        child: Listener(
-          behavior: HitTestBehavior.opaque,
-          onPointerDown: _sendButton,
-          onPointerUp: _sendButtonUp,
-          onPointerCancel: _sendButtonCancel,
-          onPointerHover: (e) => _sendMove(e.localPosition),
-          onPointerMove: (e) => _sendMove(e.localPosition),
-          onPointerSignal: _sendScroll,
-          child: videoView,
+    Widget videoView;
+    if (_client.usesFramesTransport) {
+      final bytes = _client.latestFrameBytes;
+      if (bytes == null) {
+        return const Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              CircularProgressIndicator(color: Colors.white70),
+              SizedBox(height: 12),
+              Text('Waiting for frames...',
+                  style: TextStyle(color: Colors.white70)),
+            ],
+          ),
+        );
+      }
+      final fw = _client.frameWidth > 0 ? _client.frameWidth : 16;
+      final fh = _client.frameHeight > 0 ? _client.frameHeight : 9;
+      Widget frameImage = Image.memory(
+        bytes,
+        gaplessPlayback: true,
+        fit: BoxFit.fill,
+        filterQuality: FilterQuality.high,
+      );
+      if (_controlActive) {
+        frameImage = MouseRegion(
+          cursor: SystemMouseCursors.precise,
+          child: Listener(
+            key: _videoKey,
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: _sendButton,
+            onPointerUp: _sendButtonUp,
+            onPointerCancel: _sendButtonCancel,
+            onPointerHover: (e) => _sendMove(e.localPosition),
+            onPointerMove: (e) => _sendMove(e.localPosition),
+            onPointerSignal: _sendScroll,
+            child: frameImage,
+          ),
+        );
+      } else {
+        frameImage = KeyedSubtree(key: _videoKey, child: frameImage);
+      }
+      // Listener только на прямоугольнике кадра (не на чёрных полях) —
+      // иначе клики смещаются относительно letterbox.
+      videoView = SizedBox.expand(
+        child: ColoredBox(
+          color: Colors.black,
+          child: Center(
+            child: AspectRatio(
+              aspectRatio: fw / fh,
+              child: frameImage,
+            ),
+          ),
         ),
       );
+    } else {
+      videoView = RTCVideoView(
+        _client.videoRenderer,
+        key: _videoKey,
+        objectFit: RTCVideoViewObjectFit.RTCVideoViewObjectFitContain,
+      );
+      if (_controlActive) {
+        videoView = MouseRegion(
+          cursor: SystemMouseCursors.precise,
+          child: Listener(
+            behavior: HitTestBehavior.opaque,
+            onPointerDown: _sendButton,
+            onPointerUp: _sendButtonUp,
+            onPointerCancel: _sendButtonCancel,
+            onPointerHover: (e) => _sendMove(e.localPosition),
+            onPointerMove: (e) => _sendMove(e.localPosition),
+            onPointerSignal: _sendScroll,
+            child: videoView,
+          ),
+        );
+      }
     }
 
     return Focus(

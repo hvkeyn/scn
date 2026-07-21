@@ -18,6 +18,9 @@ FARPROC WINAPI Win7DelayLoadNotifyHook(unsigned notify, PDelayLoadInfo info) {
   wchar_t wide[MAX_PATH] = {};
   MultiByteToWideChar(CP_ACP, 0, info->szDll, -1, wide, MAX_PATH);
   HMODULE module = win7_iat::LoadModuleWithWin7Imports(wide);
+  // Hostname only at load time. Full DXGI block is deferred until screen
+  // capture — applying it earlier aborts PeerConnection::Create (build 207).
+  win7_iat::ApplyWebRtcHostnameHooks();
   return reinterpret_cast<FARPROC>(module);
 }
 

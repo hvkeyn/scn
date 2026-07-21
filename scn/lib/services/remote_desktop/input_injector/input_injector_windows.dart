@@ -19,10 +19,27 @@ class WindowsInputInjector implements InputInjector {
 
   @override
   void setTargetSize(int width, int height) {
-    // Координаты приходят нормированными 0..1 от viewer, дальше переводим
-    // в систему 0..65535 с MOUSEEVENTF_VIRTUALDESK, поэтому конкретный
-    // размер захвата на хосте здесь не нужен.
+    setCaptureRect(width: width, height: height);
   }
+
+  @override
+  void setCaptureRect({
+    int left = 0,
+    int top = 0,
+    required int width,
+    required int height,
+  }) {
+    if (width <= 0 || height <= 0) return;
+    _captureLeft = left;
+    _captureTop = top;
+    _captureWidth = width;
+    _captureHeight = height;
+  }
+
+  int? _captureLeft;
+  int? _captureTop;
+  int? _captureWidth;
+  int? _captureHeight;
 
   @override
   void inject(RemoteInputEvent event) {
@@ -94,13 +111,82 @@ class WindowsInputInjector implements InputInjector {
         break;
     }
     if (x != null && y != null) {
-      // Сначала явно ставим курсор в точку, затем отдельным событием жмём
-      // кнопку. Некоторые приложения/заголовки окон хуже обрабатывают
-      // "move + button" в одном INPUT, особенно рядом с системными кнопками.
+      // Absolute coords + button in the same SendInput — required for
+      // Win7 shell (tray, taskbar, Start). Separate move-then-click often
+      // loses the click on non-client / notification-area targets.
       final point = _screenPoint(x, y);
       SetCursorPos(point.$1, point.$2);
+      if (down) {
+        _softActivateUnderCursor(point.$1, point.$2);
+      }
+      final ax = _absoluteCoord(point.$1, _virtualLeft, _virtualWidth);
+      final ay = _absoluteCoord(point.$2, _virtualTop, _virtualHeight);
+      _sendOneMouseEvent(
+        flags: flags |
+            MOUSEEVENTF_ABSOLUTE |
+            MOUSEEVENTF_VIRTUALDESK,
+        x: ax,
+        y: ay,
+        mouseData: data,
+      );
+      return;
     }
     _sendOneMouseEvent(flags: flags, mouseData: data);
+  }
+
+  /// Bring a normal app window under the cursor to the foreground.
+  /// Skips shell chrome (taskbar/tray) — those need the click itself, not focus steal.
+  void _softActivateUnderCursor(int screenX, int screenY) {
+    final pt = calloc<POINT>();
+    try {
+      pt.ref.x = screenX;
+      pt.ref.y = screenY;
+      var hwnd = WindowFromPoint(pt.ref);
+      if (hwnd == 0) return;
+      final root = GetAncestor(hwnd, GET_ANCESTOR_FLAGS.GA_ROOT);
+      if (root != 0) hwnd = root;
+
+      if (_isShellChromeHwnd(hwnd)) return;
+
+      final pidPtr = calloc<Uint32>();
+      try {
+        GetWindowThreadProcessId(hwnd, pidPtr);
+        if (pidPtr.value == 0 || pidPtr.value == GetCurrentProcessId()) {
+          return;
+        }
+      } finally {
+        calloc.free(pidPtr);
+      }
+
+      if (GetForegroundWindow() == hwnd) return;
+
+      final attachedTid = _attachToHwndThread(hwnd);
+      try {
+        ShowWindow(hwnd, SHOW_WINDOW_CMD.SW_SHOWNOACTIVATE);
+        BringWindowToTop(hwnd);
+        SetForegroundWindow(hwnd);
+      } finally {
+        if (attachedTid != null) _detachFromThread(attachedTid);
+      }
+    } finally {
+      calloc.free(pt);
+    }
+  }
+
+  bool _isShellChromeHwnd(int hwnd) {
+    final cls = wsalloc(256);
+    try {
+      if (GetClassName(hwnd, cls, 256) == 0) return false;
+      final name = cls.toDartString();
+      return name == 'Shell_TrayWnd' ||
+          name == 'Shell_SecondaryTrayWnd' ||
+          name == 'NotifyIconOverflowWindow' ||
+          name == 'Progman' ||
+          name == 'WorkerW' ||
+          name.startsWith('Windows.UI.');
+    } finally {
+      free(cls);
+    }
   }
 
   int get _virtualLeft =>
@@ -112,17 +198,45 @@ class WindowsInputInjector implements InputInjector {
   int get _virtualHeight =>
       GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYVIRTUALSCREEN);
 
+  /// Primary monitor in virtual-desktop coordinates.
+  /// GDI frame capture uses the same rect — not the full virtual screen.
+  (int left, int top, int width, int height) _primaryMonitorRect() {
+    final hmon = MonitorFromWindow(
+      GetDesktopWindow(),
+      MONITOR_FROM_FLAGS.MONITOR_DEFAULTTOPRIMARY,
+    );
+    if (hmon != 0) {
+      final info = calloc<MONITORINFO>();
+      try {
+        info.ref.cbSize = sizeOf<MONITORINFO>();
+        if (GetMonitorInfo(hmon, info) != 0) {
+          final r = info.ref.rcMonitor;
+          final w = r.right - r.left;
+          final h = r.bottom - r.top;
+          if (w > 0 && h > 0) {
+            return (r.left, r.top, w, h);
+          }
+        }
+      } finally {
+        calloc.free(info);
+      }
+    }
+    final w = GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXSCREEN);
+    final h = GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYSCREEN);
+    return (0, 0, w > 0 ? w : 1, h > 0 ? h : 1);
+  }
+
   (int, int) _screenPoint(double normX, double normY) {
-    final width = _virtualWidth <= 0
-        ? GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CXSCREEN)
-        : _virtualWidth;
-    final height = _virtualHeight <= 0
-        ? GetSystemMetrics(SYSTEM_METRICS_INDEX.SM_CYSCREEN)
-        : _virtualHeight;
-    final left = _virtualWidth <= 0 ? 0 : _virtualLeft;
-    final top = _virtualHeight <= 0 ? 0 : _virtualTop;
-    final x = left + (normX.clamp(0.0, 1.0) * (width - 1)).round();
-    final y = top + (normY.clamp(0.0, 1.0) * (height - 1)).round();
+    final rect = (_captureWidth != null && _captureHeight != null)
+        ? (
+            _captureLeft ?? 0,
+            _captureTop ?? 0,
+            _captureWidth!,
+            _captureHeight!,
+          )
+        : _primaryMonitorRect();
+    final x = rect.$1 + (normX.clamp(0.0, 1.0) * (rect.$3 - 1)).round();
+    final y = rect.$2 + (normY.clamp(0.0, 1.0) * (rect.$4 - 1)).round();
     return (x, y);
   }
 

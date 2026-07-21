@@ -6,6 +6,8 @@ import 'package:scn/models/remote_peer.dart';
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/http_client_service.dart';
 import 'package:scn/models/device.dart';
+import 'package:scn/utils/logger.dart';
+import 'package:scn/utils/win7_platform.dart';
 
 /// Provider for managing remote peers state
 class RemotePeerProvider extends ChangeNotifier {
@@ -349,6 +351,7 @@ class RemotePeerProvider extends ChangeNotifier {
     // пароль задаёт оператор сам через UI ("Set/Change password" /
     // "Generate"). Если пароль не задан, а режим passwordOnly — переводим в
     // passwordOrPrompt, чтобы хост был доступен через подтверждение.
+    AppLogger.log('RD: setRemoteDesktopEnabled($enabled) win7=$isScnWin7');
     var rd = _settings.remoteDesktop.copyWith(enabled: enabled);
     if (enabled &&
         (rd.password == null || rd.password!.isEmpty) &&
@@ -356,6 +359,7 @@ class RemotePeerProvider extends ChangeNotifier {
       rd = rd.copyWith(accessMode: RemoteDesktopAccessMode.passwordOrPrompt);
     }
     await updateRemoteDesktopSettings(rd);
+    AppLogger.log('RD: setRemoteDesktopEnabled done enabled=${rd.enabled}');
   }
 
   Future<void> setRemoteDesktopAccessMode(

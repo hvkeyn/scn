@@ -19,6 +19,15 @@ abstract class InputInjector {
   /// нормализованных координат. Если `null` — считаем размер виртуального экрана.
   void setTargetSize(int width, int height);
 
+  /// Прямоугольник захвата в координатах виртуального рабочего стола.
+  /// Нормализованные 0..1 мапятся внутрь этого rect.
+  void setCaptureRect({
+    int left = 0,
+    int top = 0,
+    required int width,
+    required int height,
+  });
+
   /// Применить событие. Реализация должна быть НЕ блокирующей (или быстрой).
   void inject(RemoteInputEvent event);
 
@@ -40,6 +49,9 @@ class _NoopInjector implements InputInjector {
   bool get isAvailable => false;
   @override
   void setTargetSize(int width, int height) {}
+  @override
+  void setCaptureRect(
+      {int left = 0, int top = 0, required int width, required int height}) {}
   @override
   void inject(RemoteInputEvent event) {}
   @override

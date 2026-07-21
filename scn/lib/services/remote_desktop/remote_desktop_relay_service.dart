@@ -9,6 +9,7 @@ import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/utils/logger.dart';
+import 'package:scn/utils/win7_platform.dart';
 
 const String defaultRemoteDesktopRelayUrl = 'ws://5.187.4.132:53319/ws';
 const String defaultRemoteDesktopRelayConfigUrl =
@@ -53,32 +54,54 @@ class RemoteDesktopRelayService extends ChangeNotifier {
   }
 
   void applySettings(RemoteDesktopSettings settings) {
+    final wasEnabled = _settings.enabled;
     _settings = settings;
     if (!_settings.enabled) {
+      AppLogger.log('RD relay: applySettings enabled=false (was=$wasEnabled)');
       stop();
       _setStatus(RemoteDesktopRelayStatus.disabled);
       return;
     }
-    start();
+    AppLogger.log(
+        'RD relay: applySettings enabled=true was=$wasEnabled win7=$isScnWin7');
+    unawaited(start());
   }
 
   Future<void> start({String relayUrl = defaultRemoteDesktopRelayUrl}) async {
-    if (_deviceId.isEmpty || !_settings.enabled) return;
+    if (_deviceId.isEmpty || !_settings.enabled) {
+      AppLogger.log(
+          'RD relay: start skipped (deviceIdEmpty=${_deviceId.isEmpty} enabled=${_settings.enabled})');
+      return;
+    }
+    AppLogger.log('RD relay: start begin url=$relayUrl');
     _relayUrl = await _resolveRelayUrl(relayUrl);
+    AppLogger.log('RD relay: resolved url=$_relayUrl');
     if (_socket != null ||
         _status == RemoteDesktopRelayStatus.connecting ||
         _status == RemoteDesktopRelayStatus.online) {
+      AppLogger.log('RD relay: start already active status=$_status');
       return;
     }
     _setStatus(RemoteDesktopRelayStatus.connecting);
     try {
       final uri = Uri.parse(_relayUrl);
-      final client = HttpClient()
-        ..badCertificateCallback = (_, __, ___) => true;
-      final socket = await WebSocket.connect(
-        uri.toString(),
-        customClient: client,
-      ).timeout(const Duration(seconds: 10));
+      // Win7: HTTPS config / custom HttpClient (BoringSSL) historically
+      // native-crashes the process. Plain ws:// without customClient is safe.
+      final WebSocket socket;
+      if (isScnWin7 || uri.scheme == 'ws') {
+        AppLogger.log('RD relay: WebSocket.connect plain (${uri.scheme})');
+        socket = await WebSocket.connect(uri.toString())
+            .timeout(const Duration(seconds: 10));
+      } else {
+        AppLogger.log('RD relay: WebSocket.connect with HttpClient (${uri.scheme})');
+        final client = HttpClient()
+          ..badCertificateCallback = (_, __, ___) => true;
+        socket = await WebSocket.connect(
+          uri.toString(),
+          customClient: client,
+        ).timeout(const Duration(seconds: 10));
+      }
+      AppLogger.log('RD relay: socket open, sending hello');
       _socket = socket;
       socket.add(jsonEncode({
         'type': 'hello',
@@ -100,6 +123,7 @@ class RemoteDesktopRelayService extends ChangeNotifier {
         cancelOnError: true,
       );
       _startPing();
+      AppLogger.log('RD relay: start ok, waiting welcome');
     } catch (e, st) {
       AppLogger.log('RD relay connect failed: $e\n$st');
       _lastError = e.toString();
@@ -109,6 +133,11 @@ class RemoteDesktopRelayService extends ChangeNotifier {
   }
 
   Future<String> _resolveRelayUrl(String fallback) async {
+    // Win7: skip HTTPS fetch — Dart TLS can abort the whole process.
+    if (isScnWin7) {
+      AppLogger.log('RD relay: skip HTTPS config on Win7, use $fallback');
+      return fallback;
+    }
     try {
       final response = await http
           .get(Uri.parse(defaultRemoteDesktopRelayConfigUrl))
@@ -153,6 +182,8 @@ class RemoteDesktopRelayService extends ChangeNotifier {
         case 'welcome':
           _iceServers = _parseIceServers(payload['iceServers']);
           _lastError = null;
+          AppLogger.log(
+              'RD relay: welcome online iceServers=${_iceServers.length}');
           _setStatus(RemoteDesktopRelayStatus.online);
           break;
         case 'pong':

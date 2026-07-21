@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
@@ -12,8 +14,11 @@ import 'package:scn/pages/home_page.dart';
 import 'package:scn/services/desktop_integration_service.dart';
 import 'package:scn/widgets/remote_desktop_permission_listener.dart';
 import 'package:scn/utils/process_manager.dart';
+import 'package:scn/utils/rd_test_env.dart';
 import 'package:scn/utils/test_config.dart';
 import 'package:scn/utils/logger.dart';
+import 'package:scn/utils/win7_platform.dart';
+import 'package:scn/widgets/win7_boot_gate.dart';
 
 void main(List<String> args) async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -83,17 +88,19 @@ void main(List<String> args) async {
 
   // Load saved remote peers
   await remotePeerProvider.load();
+  await applyRdTestHostOverrides(remotePeerProvider);
 
-  // Initialize tray & autostart (skip in test mode)
-  if (!testConfig.isTestMode) {
+  // Initialize tray & autostart (skip in test mode and on Win7).
+  final win7 = Platform.environment['SCN_WIN7'] == '1';
+  if (!testConfig.isTestMode && !win7) {
     await desktopIntegrationService.init();
   }
 
+  // Win7: start LAN services (HTTP + discovery) before UI; WAN mesh is skipped.
   try {
-    // Pass test config port to initialize
     await appService.initialize(port: testConfig.httpPort);
-  } catch (e) {
-    // If initialization fails, still run the app but show error
+  } catch (e, stack) {
+    AppLogger.log('Failed to initialize services: $e\n$stack');
     debugPrint('Warning: Failed to initialize services: $e');
     debugPrint('App will continue but some features may not work.');
   }
@@ -117,6 +124,7 @@ void main(List<String> args) async {
       child: const SCNApp(),
     ),
   );
+
 }
 
 class SCNApp extends StatelessWidget {
@@ -124,6 +132,7 @@ class SCNApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final win7 = isScnWin7;
     return MaterialApp(
       title: 'SCN - Secure Connection Network',
       debugShowCheckedModeBanner: false,
@@ -131,7 +140,7 @@ class SCNApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(
           seedColor: const Color(0xFF6366f1),
         ),
-        useMaterial3: true,
+        useMaterial3: !win7,
         scaffoldBackgroundColor: const Color(0xFF0f0f23),
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF1a1a2e),
@@ -149,7 +158,7 @@ class SCNApp extends StatelessWidget {
           seedColor: const Color(0xFF6366f1),
           brightness: Brightness.dark,
         ),
-        useMaterial3: true,
+        useMaterial3: !win7,
         scaffoldBackgroundColor: const Color(0xFF0f0f23),
         appBarTheme: const AppBarTheme(
           backgroundColor: Color(0xFF1a1a2e),
@@ -172,7 +181,9 @@ class SCNApp extends StatelessWidget {
         Locale('en', ''),
         Locale('ru', ''),
       ],
-      home: const RemoteDesktopPermissionListener(child: HomePage()),
+      home: win7
+          ? const Win7BootGate()
+          : const RemoteDesktopPermissionListener(child: HomePage()),
     );
   }
 }

@@ -7,6 +7,7 @@
 #include "utils.h"
 #include "win7_crash_log.h"
 #include "win7_env.h"
+#include "win7_mesh_signal.h"
 #include "win7_iat_patch.h"
 #include "win7_prereq.h"
 
@@ -62,6 +63,8 @@ void LogPlatformUpdateStatus() {
 
 void PreloadWin7Shims() {
   static const wchar_t* kShims[] = {
+      L"api-ms-win-core-path-l1-1-0.dll",
+      L"api-ms-win-shcore-scaling-l1-1-1.dll",
       L"scn_ntdll.dll",
       L"scn_kernel32.dll",
       L"scn_ws2.dll",
@@ -87,7 +90,9 @@ void PreloadWin7Shims() {
 int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
                       _In_ wchar_t *command_line, _In_ int show_command) {
   win7_env::Apply();
+  win7_mesh_signal::ClearSignalFile();
   win7_crash_log::Install();
+  win7_crash_log::Write(L"SCN_WIN7_RUNTIME=225-rd-input");
   win7_crash_log::Write(L"wWinMain start");
   LogExecutableInfo();
   ShowBuildBannerIfWin7();
@@ -114,13 +119,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   win7_crash_log::Write(L"prerequisites ok");
 
   win7_crash_log::Write(L"preload shims");
-  PreloadWin7Shims();
+  if (win7_env::IsWindows7()) {
+    PreloadWin7Shims();
+  }
   if (!win7_iat::PatchProcessImports()) {
-    win7_crash_log::Write(L"IAT patch abort");
+    win7_crash_log::Write(L"Win7 preload abort");
     MessageBoxW(nullptr,
-                L"Не удалось подготовить Win7-совместимость (IAT patch).\r\n\r\n"
+                L"Не удалось загрузить Win7-модули.\r\n\r\n"
                 L"Скопируйте всю папку releases\\windows целиком и проверьте "
-                L"наличие scn_ws2.dll рядом с scn.exe.\r\n\r\n"
+                L"наличие scn_ws2.dll, scn_ntdll.dll рядом с scn.exe.\r\n\r\n"
                 L"Лог: %TEMP%\\scn_win7.log",
                 L"SCN", MB_OK | MB_ICONERROR);
     return EXIT_FAILURE;
@@ -156,10 +163,23 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   window.SetQuitOnClose(true);
 
   ::MSG msg;
+  win7_crash_log::Write(L"message loop start");
+  UINT_PTR heartbeat = 0;
+  if (win7_env::IsWindows7()) {
+    heartbeat = SetTimer(nullptr, 1, 2000, nullptr);
+  }
   while (::GetMessage(&msg, nullptr, 0, 0)) {
+    if (win7_env::IsWindows7() && msg.message == WM_TIMER && msg.wParam == 1) {
+      win7_crash_log::Write(L"heartbeat 2s");
+      continue;
+    }
     ::TranslateMessage(&msg);
     ::DispatchMessage(&msg);
   }
+  if (heartbeat != 0) {
+    KillTimer(nullptr, heartbeat);
+  }
+  win7_crash_log::Write(L"message loop exit");
 
   ::CoUninitialize();
   return EXIT_SUCCESS;

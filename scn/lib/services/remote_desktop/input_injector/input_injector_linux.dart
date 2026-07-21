@@ -25,6 +25,16 @@ class LinuxInputInjector implements InputInjector {
     if (height > 0) _targetH = height;
   }
 
+  @override
+  void setCaptureRect({
+    int left = 0,
+    int top = 0,
+    required int width,
+    required int height,
+  }) {
+    setTargetSize(width, height);
+  }
+
   Future<void> _detect() async {
     if (_hasXdotool != null) return;
     try {

@@ -38,6 +38,7 @@ class DesktopIntegrationService extends ChangeNotifier
     await windowManager.ensureInitialized();
     windowManager.addListener(this);
     await _applyCloseBehavior();
+
     await _initTray();
     await _syncLaunchAtStartup();
 
@@ -191,7 +192,9 @@ class DesktopIntegrationService extends ChangeNotifier
   @override
   void onTrayIconMouseDown() async {
     if (HostWindowManager.hasActiveSessions) {
-      HostWindowManager.keepHiddenIfNeeded();
+      // Локальный клик по трею SCN во время RD — вернуть окно пользователю.
+      HostWindowManager.restoreForUser();
+      await showWindow();
       return;
     }
     await toggleWindowVisibility();
@@ -200,17 +203,15 @@ class DesktopIntegrationService extends ChangeNotifier
   @override
   void onTrayIconRightMouseDown() async {
     if (HostWindowManager.hasActiveSessions) {
-      HostWindowManager.keepHiddenIfNeeded();
-      return;
+      HostWindowManager.restoreForUser();
     }
     await trayManager.popUpContextMenu();
   }
 
   @override
   void onTrayMenuItemClick(MenuItem menuItem) async {
-    if (HostWindowManager.hasActiveSessions && menuItem.key != 'exit') {
-      HostWindowManager.keepHiddenIfNeeded();
-      return;
+    if (HostWindowManager.hasActiveSessions && menuItem.key == 'show') {
+      HostWindowManager.restoreForUser();
     }
     switch (menuItem.key) {
       case 'show':

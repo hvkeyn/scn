@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,9 @@ import 'package:web_socket_channel/io.dart';
 import 'package:scn/models/remote_desktop_models.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_protocol.dart';
 import 'package:scn/utils/logger.dart';
+import 'package:scn/utils/win7_platform.dart';
+import 'package:scn/utils/win7_rd_capture.dart';
+import 'package:scn/utils/win7_webrtc.dart';
 
 /// Параметры подключения к удалённому хосту.
 class RemoteDesktopConnectParams {
@@ -90,8 +94,22 @@ class RemoteDesktopClientService extends ChangeNotifier {
   String? _relaySessionId;
   List<Map<String, dynamic>> _relayIceServers = const [];
 
+  /// Frame transport (Win7 host): JPEG over signaling, no WebRTC.
+  bool _useFramesTransport = false;
+  Uint8List? _latestFrameBytes;
+  int _frameWidth = 0;
+  int _frameHeight = 0;
+  List<Win7MonitorInfo> _monitors = const [];
+  int _monitorIndex = 0;
+
   RTCVideoRenderer get videoRenderer => _videoRenderer;
-  bool get isVideoReady => _videoRendererReady;
+  bool get isVideoReady => _videoRendererReady || _useFramesTransport;
+  bool get usesFramesTransport => _useFramesTransport;
+  Uint8List? get latestFrameBytes => _latestFrameBytes;
+  int get frameWidth => _frameWidth;
+  int get frameHeight => _frameHeight;
+  List<Win7MonitorInfo> get monitors => _monitors;
+  int get monitorIndex => _monitorIndex;
   RemoteDesktopSession? get session => _session;
   RemoteDesktopConnectParams? get lastParams => _lastParams;
   bool get isStreaming =>
@@ -374,7 +392,18 @@ class RemoteDesktopClientService extends ChangeNotifier {
   Future<void> _handleSignal(RemoteDesktopSignal signal) async {
     switch (signal.type) {
       case RemoteDesktopSignalType.hostReady:
-        await _initiateOffer();
+        final transport = signal.payload['transport']?.toString();
+        if (transport == 'frames') {
+          await _enterFramesMode(signal.payload);
+        } else {
+          await _initiateOffer();
+        }
+        break;
+      case RemoteDesktopSignalType.frame:
+        _onFrameSignal(signal.payload);
+        break;
+      case RemoteDesktopSignalType.clipboard:
+        _onRemoteClipboard(signal.payload);
         break;
       case RemoteDesktopSignalType.answer:
         final pc = _pc;
@@ -431,6 +460,64 @@ class RemoteDesktopClientService extends ChangeNotifier {
     }
   }
 
+  Future<void> _enterFramesMode(Map<String, dynamic> payload) async {
+    AppLogger.log('RD client: entering frames transport mode');
+    _useFramesTransport = true;
+    _peerEverConnected = true;
+    final control = payload['controlAllowed'] == true;
+    _monitorIndex = (payload['monitorIndex'] as num?)?.toInt() ?? 0;
+    final rawMonitors = payload['monitors'];
+    if (rawMonitors is List) {
+      _monitors = rawMonitors
+          .whereType<Map>()
+          .map(Win7MonitorInfo.fromMap)
+          .toList(growable: false);
+    } else {
+      _monitors = const [];
+    }
+    AppLogger.log(
+        'RD client: monitors=${_monitors.length} selected=$_monitorIndex');
+    _session = _session?.copyWith(
+      status: RemoteDesktopSessionStatus.streaming,
+      startedAt: DateTime.now(),
+      inputMode: control
+          ? RemoteDesktopInputMode.full
+          : RemoteDesktopInputMode.viewOnly,
+      audioEnabled: false,
+    );
+    notifyListeners();
+  }
+
+  void _onFrameSignal(Map<String, dynamic> payload) {
+    final data = payload['data']?.toString();
+    if (data == null || data.isEmpty) return;
+    try {
+      final bytes = base64Decode(data);
+      _latestFrameBytes = bytes;
+      _frameWidth = (payload['w'] as num?)?.toInt() ?? _frameWidth;
+      _frameHeight = (payload['h'] as num?)?.toInt() ?? _frameHeight;
+      _gotVideoTrack = true;
+      if (_session?.status != RemoteDesktopSessionStatus.streaming) {
+        _session = _session?.copyWith(
+          status: RemoteDesktopSessionStatus.streaming,
+          startedAt: _session?.startedAt ?? DateTime.now(),
+        );
+      }
+      notifyListeners();
+    } catch (e) {
+      AppLogger.log('RD client: frame decode failed: $e');
+    }
+  }
+
+  void _onRemoteClipboard(Map<String, dynamic> payload) {
+    final text = payload['text'] as String?;
+    if (text == null) return;
+    _knownSharedClipboardText = text;
+    unawaited(Clipboard.setData(ClipboardData(text: text)));
+    AppLogger.log(
+        'RD client: received remote clipboard update (${text.length} chars)');
+  }
+
   List<Map<String, dynamic>> _parseIceServers(Object? raw) {
     if (raw is! List) return const [];
     return raw
@@ -455,6 +542,9 @@ class RemoteDesktopClientService extends ChangeNotifier {
   }
 
   Future<void> _initiateOffer() async {
+    if (isScnWin7) {
+      throw UnsupportedError(Win7WebRtc.unsupportedMediaReason);
+    }
     final iceServers = _relayIceServers.isNotEmpty
         ? _relayIceServers
         : <Map<String, dynamic>>[
@@ -465,10 +555,11 @@ class RemoteDesktopClientService extends ChangeNotifier {
               ],
             },
           ];
-    final pc = await createPeerConnection({
-      'iceServers': iceServers,
-      'sdpSemantics': 'unified-plan',
-    });
+    final pc = await createScnPeerConnection(
+      iceServers: iceServers,
+      offerToReceiveAudio: _session?.audioEnabled == true,
+      offerToReceiveVideo: true,
+    );
     _pc = pc;
 
     pc.onTrack = (RTCTrackEvent event) {
@@ -588,6 +679,24 @@ class RemoteDesktopClientService extends ChangeNotifier {
   bool sendClipboardUpdate(String text) {
     if (_session?.inputMode != RemoteDesktopInputMode.full) return false;
     if (text == _knownSharedClipboardText) return false;
+    if (_useFramesTransport) {
+      try {
+        _sendSignal(RemoteDesktopSignal(
+          type: RemoteDesktopSignalType.clipboard,
+          payload: {
+            'text': text,
+            'ts': DateTime.now().microsecondsSinceEpoch,
+          },
+        ));
+        _knownSharedClipboardText = text;
+        AppLogger.log(
+            'RD client: pushed local clipboard to host (${text.length} chars)');
+        return true;
+      } catch (e) {
+        AppLogger.log('RD client: sendClipboardUpdate failed: $e');
+        return false;
+      }
+    }
     final channel = _inputChannel;
     if (channel == null ||
         channel.state != RTCDataChannelState.RTCDataChannelOpen) {
@@ -615,6 +724,22 @@ class RemoteDesktopClientService extends ChangeNotifier {
       if (event.kind != RemoteInputEventKind.mouseMove) {
         AppLogger.log(
             'RD client: sendInput rejected, inputMode=${_session?.inputMode}');
+      }
+      return;
+    }
+    if (_useFramesTransport) {
+      try {
+        _sendSignal(RemoteDesktopSignal(
+          type: RemoteDesktopSignalType.input,
+          payload: event.toJson(),
+        ));
+        if (event.kind != RemoteInputEventKind.mouseMove) {
+          AppLogger.log(
+              'RD client: sent ${event.kind.name} (frames) button=${event.button?.name} '
+              'key=${event.keyCode}');
+        }
+      } catch (e) {
+        AppLogger.log('RD client: sendInputEvent (frames) failed: $e');
       }
       return;
     }
@@ -660,6 +785,19 @@ class RemoteDesktopClientService extends ChangeNotifier {
         if (fps != null) 'fps': fps,
       },
     ));
+  }
+
+  /// Frames transport: switch host capture monitor (-1 = all displays).
+  void requestMonitor(int monitorIndex) {
+    if (!_useFramesTransport) return;
+    if (_monitorIndex == monitorIndex) return;
+    _monitorIndex = monitorIndex;
+    notifyListeners();
+    _sendSignal(RemoteDesktopSignal(
+      type: RemoteDesktopSignalType.monitorChange,
+      payload: {'monitorIndex': monitorIndex},
+    ));
+    AppLogger.log('RD client: requestMonitor index=$monitorIndex');
   }
 
   void _startStatsTimer() {
@@ -755,6 +893,12 @@ class RemoteDesktopClientService extends ChangeNotifier {
     _statsTimer = null;
     _relaySessionId = null;
     _relayIceServers = const [];
+    _useFramesTransport = false;
+    _latestFrameBytes = null;
+    _frameWidth = 0;
+    _frameHeight = 0;
+    _monitors = const [];
+    _monitorIndex = 0;
     try {
       await _wsSub?.cancel();
     } catch (_) {}
