@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -6,8 +7,22 @@ import 'package:flutter/services.dart';
 import 'package:flutter_webrtc/flutter_webrtc.dart';
 
 import 'package:scn/models/remote_desktop_models.dart';
+import 'package:scn/services/remote_desktop/rd_keyboard_grab.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_client_service.dart';
 import 'package:scn/utils/logger.dart';
+
+/// How the remote frame is scaled inside the viewer window.
+enum RdViewScale {
+  /// Whole desktop visible (letterbox) — may look small.
+  fit,
+
+  /// Fill window (crop edges) — larger UI, like AnyDesk «Adapt».
+  adapt,
+
+  zoom125,
+  zoom150,
+  zoom200,
+}
 
 /// Полноэкранная страница для просмотра удалённого экрана.
 ///
@@ -39,6 +54,19 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   bool _showStats = false;
   bool _controlActive = false; // переключатель view-only/control
   bool _captureKeyboard = true;
+  /// Default adapt = larger remote UI (AnyDesk-like).
+  RdViewScale _viewScale = RdViewScale.adapt;
+  /// Pan into oversized frame (Adapt/Zoom). (0,0) = top-left of remote desktop.
+  Offset _viewPan = Offset.zero;
+  double _viewW = 0;
+  double _viewH = 0;
+  double _dispW = 0;
+  double _dispH = 0;
+  Offset? _lastViewportPos;
+  Timer? _edgePanTimer;
+  bool _middlePanning = false;
+  Offset? _middlePanLast;
+  bool _panCenteredOnce = false;
   Offset? _lastSentMove;
   int _lastMoveSentAtMs = 0;
 
@@ -118,6 +146,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     });
     if (_controlActive) {
       _focusNode.requestFocus();
+      _syncKeyboardGrab();
     }
   }
 
@@ -128,7 +157,29 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     if (canControl && _controlActive && !_focusNode.hasFocus) {
       _focusNode.requestFocus();
     }
+    _syncKeyboardGrab();
     setState(() {});
+  }
+
+  void _syncKeyboardGrab() {
+    final want = _controlActive && _captureKeyboard && mounted;
+    if (want) {
+      if (!RdKeyboardGrab.isActive) {
+        RdKeyboardGrab.start(_onGrabbedKey);
+      }
+    } else {
+      RdKeyboardGrab.stop();
+    }
+  }
+
+  void _onGrabbedKey(int vk, bool down) {
+    if (!_controlActive || !_captureKeyboard) return;
+    // Forward raw Win32 VK to host (injector accepts 1..255 as VK).
+    _client.sendInputEvent(RemoteInputEvent(
+      kind: down ? RemoteInputEventKind.keyDown : RemoteInputEventKind.keyUp,
+      keyCode: vk,
+      timestampUs: DateTime.now().microsecondsSinceEpoch,
+    ));
   }
 
   /// Полное завершение сессии — вызывается ТОЛЬКО по явному кнопке
@@ -138,6 +189,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     if (_disconnecting) return;
     _disconnecting = true;
     AppLogger.log('RD viewer: gracefulShutdown begin');
+    RdKeyboardGrab.stop();
     _releaseAllInput();
     try {
       await _client.disconnect();
@@ -154,6 +206,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     _errorSub?.cancel();
     _errorSub = null;
     _client.removeListener(_onClientChange);
+    RdKeyboardGrab.stop();
     // Отжимаем то, что было нажато на момент back, чтобы курсор/клавиша не
     // залипли на хосте.
     _releaseAllInput();
@@ -163,6 +216,9 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   void dispose() {
     AppLogger.log(
         'RD viewer: dispose, ownsClient=$_ownsClient disconnecting=$_disconnecting');
+    RdKeyboardGrab.stop();
+    _edgePanTimer?.cancel();
+    _edgePanTimer = null;
     _clipboardPollTimer?.cancel();
     _clipboardPollTimer = null;
     _errorSub?.cancel();
@@ -204,20 +260,113 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
 
   // ---------- input forwarding ----------
 
+  double _computeViewScale({
+    required double frameW,
+    required double frameH,
+    required double viewW,
+    required double viewH,
+  }) {
+    if (frameW <= 0 || frameH <= 0 || viewW <= 0 || viewH <= 0) return 1;
+    final fit = math.min(viewW / frameW, viewH / frameH);
+    final cover = math.max(viewW / frameW, viewH / frameH);
+    switch (_viewScale) {
+      case RdViewScale.fit:
+        return fit;
+      case RdViewScale.adapt:
+        return cover;
+      case RdViewScale.zoom125:
+        return fit * 1.25;
+      case RdViewScale.zoom150:
+        return fit * 1.5;
+      case RdViewScale.zoom200:
+        return fit * 2.0;
+    }
+  }
+
+  double get _maxPanX => math.max(0.0, _dispW - _viewW);
+  double get _maxPanY => math.max(0.0, _dispH - _viewH);
+  bool get _canPan => _maxPanX > 0.5 || _maxPanY > 0.5;
+
+  Offset _clampPan(Offset pan) => Offset(
+        pan.dx.clamp(0.0, _maxPanX),
+        pan.dy.clamp(0.0, _maxPanY),
+      );
+
+  void _centerPan() {
+    _viewPan = Offset(_maxPanX / 2, _maxPanY / 2);
+  }
+
+  void _setViewScale(RdViewScale scale) {
+    setState(() {
+      _viewScale = scale;
+      _panCenteredOnce = false;
+    });
+  }
+
+  void _tickEdgePan() {
+    final pos = _lastViewportPos;
+    if (pos == null || !_canPan || _middlePanning) {
+      _edgePanTimer?.cancel();
+      _edgePanTimer = null;
+      return;
+    }
+    const edge = 36.0;
+    const step = 18.0;
+    var dx = 0.0;
+    var dy = 0.0;
+    if (pos.dx <= edge && _viewPan.dx > 0) dx = -step;
+    if (pos.dx >= _viewW - edge && _viewPan.dx < _maxPanX) dx = step;
+    if (pos.dy <= edge && _viewPan.dy > 0) dy = -step;
+    if (pos.dy >= _viewH - edge && _viewPan.dy < _maxPanY) dy = step;
+    if (dx == 0 && dy == 0) {
+      _edgePanTimer?.cancel();
+      _edgePanTimer = null;
+      return;
+    }
+    setState(() {
+      _viewPan = _clampPan(_viewPan + Offset(dx, dy));
+    });
+    // Content moved under a stationary cursor — resync remote pointer.
+    _sendMoveFromViewport(pos, force: true);
+  }
+
+  void _updateEdgePan(Offset viewportLocal) {
+    _lastViewportPos = viewportLocal;
+    if (!_canPan || _middlePanning) return;
+    const edge = 36.0;
+    final near = viewportLocal.dx <= edge ||
+        viewportLocal.dx >= _viewW - edge ||
+        viewportLocal.dy <= edge ||
+        viewportLocal.dy >= _viewH - edge;
+    if (near) {
+      _edgePanTimer ??=
+          Timer.periodic(const Duration(milliseconds: 16), (_) => _tickEdgePan());
+    }
+  }
+
+  /// Viewport point → normalized remote coords (frames + pan).
+  Offset? _normalizeViewport(Offset viewportLocal) {
+    if (_dispW <= 0 || _dispH <= 0) return null;
+    final x = viewportLocal.dx + _viewPan.dx;
+    final y = viewportLocal.dy + _viewPan.dy;
+    if (x < 0 || y < 0 || x > _dispW || y > _dispH) return null;
+    return Offset(
+      (x / _dispW).clamp(0.0, 1.0),
+      (y / _dispH).clamp(0.0, 1.0),
+    );
+  }
+
   Offset? _normalize(Offset local) {
+    // Frames mode with viewport Listener: [local] is already viewport-space.
+    if (_client.usesFramesTransport) {
+      return _normalizeViewport(local);
+    }
+
     final renderBox =
         _videoKey.currentContext?.findRenderObject() as RenderBox?;
     if (renderBox == null || !renderBox.hasSize) return null;
     final size = renderBox.size;
     if (size.width == 0 || size.height == 0) return null;
-
-    // Frames mode: Listener сидит ровно на картинке (AspectRatio), без
-    // letterbox — localPosition уже в координатах кадра.
-    if (_client.usesFramesTransport) {
-      final dx = (local.dx / size.width).clamp(0.0, 1.0);
-      final dy = (local.dy / size.height).clamp(0.0, 1.0);
-      return Offset(dx, dy);
-    }
 
     // RTCVideoView рисует поток с objectFit=contain. Если соотношение сторон
     // viewer-окна не совпадает с удаленным экраном, появляются черные поля.
@@ -256,11 +405,46 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     return Offset(dx, dy);
   }
 
+  void _sendMoveFromViewport(Offset viewportLocal, {bool force = false}) {
+    if (!_controlActive) return;
+    final n = _normalizeViewport(viewportLocal);
+    if (n == null) return;
+    final nowMs = DateTime.now().millisecondsSinceEpoch;
+    if (!force && nowMs - _lastMoveSentAtMs < 8) return;
+    if (!force && _lastSentMove != null) {
+      if ((n.dx - _lastSentMove!.dx).abs() < 0.0005 &&
+          (n.dy - _lastSentMove!.dy).abs() < 0.0005) {
+        return;
+      }
+    }
+    _lastSentMove = n;
+    _lastMoveSentAtMs = nowMs;
+    _client.sendInputEvent(RemoteInputEvent(
+      kind: RemoteInputEventKind.mouseMove,
+      x: n.dx,
+      y: n.dy,
+      timestampUs: DateTime.now().microsecondsSinceEpoch,
+    ));
+  }
+
   void _sendMove(Offset local) {
+    if (_client.usesFramesTransport) {
+      if (_middlePanning && _middlePanLast != null) {
+        final delta = local - _middlePanLast!;
+        _middlePanLast = local;
+        setState(() {
+          // Drag content with the cursor (grab semantics).
+          _viewPan = _clampPan(_viewPan - delta);
+        });
+        return;
+      }
+      _updateEdgePan(local);
+      _sendMoveFromViewport(local);
+      return;
+    }
     if (!_controlActive) return;
     final n = _normalize(local);
     if (n == null) return;
-    // Throttle ~120 Hz — enough for smooth cursor without flooding the pipe.
     final nowMs = DateTime.now().millisecondsSinceEpoch;
     if (nowMs - _lastMoveSentAtMs < 8) return;
     if (_lastSentMove != null) {
@@ -286,6 +470,15 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     AppLogger.log(
         'RD viewer: PointerDown buttons=${ev.buttons} held=$_pressedMouseButtons '
         'controlActive=$_controlActive');
+    // Middle-drag pans oversized Adapt/Zoom view (AnyDesk-like).
+    if (_client.usesFramesTransport &&
+        _canPan &&
+        (ev.buttons & kMiddleMouseButton) != 0) {
+      _middlePanning = true;
+      _middlePanLast = ev.localPosition;
+      _pressedMouseButtons = ev.buttons;
+      return;
+    }
     if (!_controlActive) return;
     final n = _normalize(ev.localPosition);
     if (n == null) {
@@ -329,6 +522,12 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
     AppLogger.log(
         'RD viewer: PointerUp buttons=${ev.buttons} held=$_pressedMouseButtons '
         'controlActive=$_controlActive');
+    if (_middlePanning && (ev.buttons & kMiddleMouseButton) == 0) {
+      _middlePanning = false;
+      _middlePanLast = null;
+      _pressedMouseButtons = ev.buttons;
+      return;
+    }
     if (!_controlActive) return;
     // PointerUpEvent.buttons после Up почти всегда 0; считаем "разницу" —
     // именно те битовые позиции, которые ушли из удерживаемых, и отжимаем их.
@@ -366,8 +565,22 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
   }
 
   void _sendScroll(PointerSignalEvent ev) {
-    if (!_controlActive) return;
     if (ev is! PointerScrollEvent) return;
+    // Shift+wheel pans oversized Adapt/Zoom (keep wheel for remote otherwise).
+    final shift = HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.shiftLeft) ||
+        HardwareKeyboard.instance.logicalKeysPressed.contains(
+          LogicalKeyboardKey.shiftRight);
+    if (_client.usesFramesTransport && _canPan && shift) {
+      setState(() {
+        _viewPan = _clampPan(
+            _viewPan + Offset(ev.scrollDelta.dx, ev.scrollDelta.dy));
+      });
+      final pos = _lastViewportPos;
+      if (pos != null) _sendMoveFromViewport(pos, force: true);
+      return;
+    }
+    if (!_controlActive) return;
     _client.sendInputEvent(RemoteInputEvent(
       kind: RemoteInputEventKind.mouseScroll,
       scrollDeltaX: -ev.scrollDelta.dx,
@@ -560,18 +773,55 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
                   if (!v) _releaseAllInput();
                   setState(() => _controlActive = v);
                   if (v) _focusNode.requestFocus();
+                  _syncKeyboardGrab();
                 }
               : null,
         ),
       ),
       if (_controlActive)
         IconButton(
-          tooltip:
-              _captureKeyboard ? 'Stop capturing keyboard' : 'Capture keyboard',
+          tooltip: _captureKeyboard
+              ? 'Клавиатура → удалённый ПК (Win+стрелки тоже)'
+              : 'Клавиатура остаётся на этом ПК',
           icon: Icon(
               _captureKeyboard ? Icons.keyboard : Icons.keyboard_alt_outlined),
-          onPressed: () => setState(() => _captureKeyboard = !_captureKeyboard),
+          onPressed: () {
+            setState(() => _captureKeyboard = !_captureKeyboard);
+            _syncKeyboardGrab();
+          },
         ),
+      PopupMenuButton<RdViewScale>(
+        tooltip: 'Масштаб (Adapt = крупнее, края — наведением / СКМ)',
+        initialValue: _viewScale,
+        onSelected: _setViewScale,
+        itemBuilder: (_) => const [
+          PopupMenuItem(
+            value: RdViewScale.adapt,
+            child: Text('Adapt — крупнее (pan к краям)',
+                style: TextStyle(color: Colors.white)),
+          ),
+          PopupMenuItem(
+            value: RdViewScale.fit,
+            child: Text('Fit — весь рабочий стол',
+                style: TextStyle(color: Colors.white)),
+          ),
+          PopupMenuItem(
+            value: RdViewScale.zoom125,
+            child: Text('Zoom 125%', style: TextStyle(color: Colors.white)),
+          ),
+          PopupMenuItem(
+            value: RdViewScale.zoom150,
+            child: Text('Zoom 150%', style: TextStyle(color: Colors.white)),
+          ),
+          PopupMenuItem(
+            value: RdViewScale.zoom200,
+            child: Text('Zoom 200%', style: TextStyle(color: Colors.white)),
+          ),
+        ],
+        icon: Icon(_viewScale == RdViewScale.fit
+            ? Icons.fit_screen
+            : Icons.zoom_in_map),
+      ),
       if (_controlActive)
         IconButton(
           tooltip: 'Send Ctrl + Alt + Del',
@@ -761,33 +1011,93 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
         filterQuality: FilterQuality.high,
       );
       if (_controlActive) {
+        // Hide local cursor — remote cursor is painted into the JPEG frame.
         frameImage = MouseRegion(
-          cursor: SystemMouseCursors.precise,
-          child: Listener(
-            key: _videoKey,
-            behavior: HitTestBehavior.opaque,
-            onPointerDown: _sendButton,
-            onPointerUp: _sendButtonUp,
-            onPointerCancel: _sendButtonCancel,
-            onPointerHover: (e) => _sendMove(e.localPosition),
-            onPointerMove: (e) => _sendMove(e.localPosition),
-            onPointerSignal: _sendScroll,
-            child: frameImage,
-          ),
+          cursor: SystemMouseCursors.none,
+          child: frameImage,
         );
-      } else {
-        frameImage = KeyedSubtree(key: _videoKey, child: frameImage);
       }
-      // Listener только на прямоугольнике кадра (не на чёрных полях) —
-      // иначе клики смещаются относительно letterbox.
       videoView = SizedBox.expand(
         child: ColoredBox(
           color: Colors.black,
-          child: Center(
-            child: AspectRatio(
-              aspectRatio: fw / fh,
-              child: frameImage,
-            ),
+          child: LayoutBuilder(
+            builder: (context, constraints) {
+              final scale = _computeViewScale(
+                frameW: fw.toDouble(),
+                frameH: fh.toDouble(),
+                viewW: constraints.maxWidth,
+                viewH: constraints.maxHeight,
+              );
+              final dispW = fw * scale;
+              final dispH = fh * scale;
+              final viewW = constraints.maxWidth;
+              final viewH = constraints.maxHeight;
+              _viewW = viewW;
+              _viewH = viewH;
+              _dispW = dispW;
+              _dispH = dispH;
+              if (!_panCenteredOnce) {
+                _panCenteredOnce = true;
+                _viewPan = Offset(_maxPanX / 2, _maxPanY / 2);
+              } else {
+                _viewPan = _clampPan(_viewPan);
+              }
+
+              // Letterbox when Fit (content smaller than view).
+              final left =
+                  dispW <= viewW ? (viewW - dispW) / 2 : -_viewPan.dx;
+              final top =
+                  dispH <= viewH ? (viewH - dispH) / 2 : -_viewPan.dy;
+
+              Widget layer = Stack(
+                clipBehavior: Clip.hardEdge,
+                children: [
+                  Positioned(
+                    left: left,
+                    top: top,
+                    width: dispW,
+                    height: dispH,
+                    child: frameImage,
+                  ),
+                  if (_canPan)
+                    Positioned(
+                      right: 8,
+                      bottom: 8,
+                      child: IgnorePointer(
+                        child: DecoratedBox(
+                          decoration: BoxDecoration(
+                            color: Colors.black54,
+                            borderRadius: BorderRadius.circular(6),
+                          ),
+                          child: const Padding(
+                            padding: EdgeInsets.symmetric(
+                                horizontal: 8, vertical: 4),
+                            child: Text(
+                              'Край экрана / СКМ / Shift+колёсико',
+                              style: TextStyle(
+                                  color: Colors.white70, fontSize: 11),
+                            ),
+                          ),
+                        ),
+                      ),
+                    ),
+                ],
+              );
+
+              // Viewport Listener always — pan works even in view-only.
+              layer = Listener(
+                key: _videoKey,
+                behavior: HitTestBehavior.opaque,
+                onPointerDown: _sendButton,
+                onPointerUp: _sendButtonUp,
+                onPointerCancel: _sendButtonCancel,
+                onPointerHover: (e) => _sendMove(e.localPosition),
+                onPointerMove: (e) => _sendMove(e.localPosition),
+                onPointerSignal: _sendScroll,
+                child: layer,
+              );
+              return layer;
+            },
           ),
         ),
       );
@@ -799,7 +1109,7 @@ class _RemoteDesktopViewerPageState extends State<RemoteDesktopViewerPage> {
       );
       if (_controlActive) {
         videoView = MouseRegion(
-          cursor: SystemMouseCursors.precise,
+          cursor: SystemMouseCursors.none,
           child: Listener(
             behavior: HitTestBehavior.opaque,
             onPointerDown: _sendButton,

@@ -1,0 +1,21 @@
+[Unit]
+Description=SCN Remote Desktop Relay
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/scn-relay
+Environment=SCN_RELAY_PORT=53319
+Environment=SCN_RELAY_ID=ru
+Environment=SCN_RELAY_REGION=ru
+Environment=SCN_PUBLIC_BASE_URL=http://158.160.104.107:53319
+Environment=SCN_TURN_HOST=158.160.104.107
+ExecStart=/usr/bin/node /opt/scn-relay/server.js
+Restart=always
+RestartSec=2
+# Isolated user if present; falls back to root only if scn-relay user missing.
+User=root
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

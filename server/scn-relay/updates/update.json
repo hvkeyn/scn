@@ -1,11 +1,12 @@
-﻿{
-    "build":  225,
-    "version":  "1.0.0",
-    "sha256":  "9fb1285d7f2e640a69fa02d11bef0a296dd7c2ff2426938f920e1a17310f5086",
-    "mandatory":  false,
-    "changes":  [
-                    "Build 225"
-                ],
-    "url":  "http://5.187.4.132:53319/scn/scn-windows.zip",
-    "versionString":  "1.0.0+225"
+{
+  "version": "1.0.0",
+  "build": 229,
+  "versionString": "1.0.0+229",
+  "url": "http://5.187.4.132:53319/scn/scn-windows.zip",
+  "sha256": "00ac222198eb19606ab9697302caad87c9edad8947b1343c0da532a02bd8e2b9",
+  "mandatory": false,
+  "changes": [
+    "Adapt/Zoom: pan to edges (taskbar/resize)",
+    "Edge hover, middle-drag, Shift+wheel"
+  ]
 }

@@ -7,6 +7,8 @@ const { WebSocketServer } = require('ws');
 const PORT = Number(process.env.SCN_RELAY_PORT || 53319);
 const HOST_TTL_MS = Number(process.env.SCN_HOST_TTL_MS || 45_000);
 const SESSION_TTL_MS = Number(process.env.SCN_SESSION_TTL_MS || 10 * 60_000);
+const RELAY_ID = process.env.SCN_RELAY_ID || 'de';
+const RELAY_REGION = process.env.SCN_RELAY_REGION || 'eu';
 const PUBLIC_BASE_URL = process.env.SCN_PUBLIC_BASE_URL || `http://5.187.4.132:${PORT}`;
 const TURN_USERNAME = process.env.SCN_TURN_USERNAME || 'scn';
 const TURN_CREDENTIAL = process.env.SCN_TURN_CREDENTIAL || '';
@@ -120,6 +122,8 @@ const server = http.createServer((req, res) => {
     const body = JSON.stringify({
       ok: true,
       service: 'scn-relay',
+      id: RELAY_ID,
+      region: RELAY_REGION,
       timestamp: nowIso(),
       hosts: publicHosts().length,
       sessions: sessions.size,
@@ -135,6 +139,8 @@ const server = http.createServer((req, res) => {
       ok: true,
       timestamp: nowIso(),
       relay: {
+        id: RELAY_ID,
+        region: RELAY_REGION,
         httpUrl: PUBLIC_BASE_URL,
         wsUrl: PUBLIC_BASE_URL.replace(/^http/, 'ws') + '/ws',
       },
@@ -151,6 +157,42 @@ const server = http.createServer((req, res) => {
   if (req.method === 'GET' && urlPath === '/api/v1/rd/hosts') {
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ hosts: publicHosts() }));
+    return;
+  }
+
+  if (req.method === 'GET' && urlPath === '/api/v1/rd/lookup') {
+    const u = new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`);
+    const codeRaw = String(u.searchParams.get('code') || '').replace(/\D/g, '');
+    prune();
+    let found = null;
+    if (codeRaw) {
+      for (const host of hosts.values()) {
+        const c = String(host.code || '').replace(/\D/g, '');
+        if (c === codeRaw || c === codeRaw.padStart(9, '0')) {
+          found = host;
+          break;
+        }
+      }
+      if (!found && hostCodes.has(codeRaw)) {
+        found = hosts.get(hostCodes.get(codeRaw));
+      }
+      if (!found && hostCodes.has(codeRaw.padStart(9, '0'))) {
+        found = hosts.get(hostCodes.get(codeRaw.padStart(9, '0')));
+      }
+    }
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({
+      found: !!found,
+      id: RELAY_ID,
+      region: RELAY_REGION,
+      host: found
+        ? {
+            deviceId: found.deviceId,
+            code: found.code,
+            alias: found.alias,
+          }
+        : null,
+    }));
     return;
   }
 

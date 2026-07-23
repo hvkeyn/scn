@@ -286,15 +286,16 @@ class UpdateService {
     required String exePath,
     required String workDir,
   }) {
+    // PowerShell's $PID is a built-in read-only automatic variable — never assign to it.
     return '''
 \$ErrorActionPreference = "Continue"
-\$pid = $pid
+\$appPid = $pid
 \$zipPath = "$zipPath"
 \$targetDir = "$targetDir"
 \$exePath = "$exePath"
 \$workDir = "$workDir\\extracted"
 
-while (Get-Process -Id \$pid -ErrorAction SilentlyContinue) {
+while (Get-Process -Id \$appPid -ErrorAction SilentlyContinue) {
   Start-Sleep -Milliseconds 300
 }
 

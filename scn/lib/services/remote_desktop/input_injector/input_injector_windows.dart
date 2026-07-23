@@ -262,7 +262,13 @@ class WindowsInputInjector implements InputInjector {
 
   void _sendKey(RemoteInputEvent event, {required bool down}) {
     final vk = WinKeymap.virtualKeyForLogicalKey(event.keyCode) ??
-        WinKeymap.virtualKeyForPhysicalKey(event.physicalKeyCode);
+        WinKeymap.virtualKeyForPhysicalKey(event.physicalKeyCode) ??
+        // Raw Win32 VK from LL-hook (0..255).
+        ((event.keyCode != null &&
+                event.keyCode! > 0 &&
+                event.keyCode! <= 0xFF)
+            ? event.keyCode
+            : null);
     if (vk == null) {
       // Если не удалось смапить keycode — пробуем как unicode-символ.
       final text = event.text;

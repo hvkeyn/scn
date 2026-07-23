@@ -16,6 +16,7 @@ import 'package:scn/providers/remote_peer_provider.dart';
 import 'package:scn/services/app_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_client_service.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_host_service.dart';
+import 'package:scn/services/remote_desktop/relay_selector.dart';
 import 'package:scn/services/remote_desktop/remote_desktop_relay_service.dart';
 import 'package:scn/utils/logger.dart';
 import 'package:scn/utils/rd_test_env.dart';
@@ -351,10 +352,16 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   Widget _wanAccessCard(BuildContext context) {
     final relay = context.watch<RemoteDesktopRelayService>();
     final scheme = Theme.of(context).colorScheme;
+    final onlineRelays = relay.relayStatuses
+        .where((s) => s['status'] == 'online')
+        .map((s) => s['label'] ?? s['id'] ?? '')
+        .where((s) => s.isNotEmpty)
+        .join(', ');
     final statusText = switch (relay.status) {
       RemoteDesktopRelayStatus.disabled => 'Отключён',
       RemoteDesktopRelayStatus.connecting => 'Подключение к relay...',
-      RemoteDesktopRelayStatus.online => 'Онлайн через VPS',
+      RemoteDesktopRelayStatus.online =>
+        onlineRelays.isEmpty ? 'Онлайн через VPS' : 'Онлайн: $onlineRelays',
       RemoteDesktopRelayStatus.offline => 'Нет соединения с relay',
       RemoteDesktopRelayStatus.error => 'Ошибка relay',
     };
@@ -377,6 +384,11 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
                 ),
                 Chip(label: Text(statusText)),
               ],
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Автовыбор: host на всех живых relay, viewer берёт ближайший.',
+              style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -923,6 +935,36 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
   String _passwordPrefKey(Device device) =>
       'rd_lan_password_${device.id}_${device.ip}_${device.port}';
 
+  Future<void> _connectViaWanCode(String normalizedCode) async {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Выбор ближайшего relay...')),
+    );
+    final endpoint = await RdRelaySelector.pickForHostCode(normalizedCode);
+    if (!mounted) return;
+    final relayUrl = endpoint?.wsUrl ??
+        context.read<RemoteDesktopRelayService>().relayUrl;
+    AppLogger.log(
+        'RD WAN connect code=$normalizedCode via=${endpoint?.id ?? 'fallback'} '
+        'url=$relayUrl');
+    final app = context.read<AppService>();
+    final params = RemoteDesktopConnectParams(
+      host:
+          'WAN ${_formatConnectionCode(normalizedCode.padLeft(9, '0'))} (${endpoint?.label ?? 'relay'})',
+      port: 0,
+      myDeviceId: app.deviceId,
+      myAlias: app.deviceAlias,
+      password: _passwordCtrl.text.isEmpty ? null : _passwordCtrl.text,
+      wantControl: _wantControl,
+      wantAudio: _wantAudio,
+      relayUrl: relayUrl,
+      relayTargetId: normalizedCode,
+    );
+    Navigator.of(context).push(MaterialPageRoute(
+      builder: (_) => RemoteDesktopViewerPage(params: params),
+    ));
+  }
+
   void _onManualConnect() {
     final input = _hostCtrl.text.trim();
     final normalizedCode = _digitsOnly(input);
@@ -935,22 +977,7 @@ class _RemoteDesktopPageState extends State<RemoteDesktopPage> {
         port: _portCtrl.text.trim().isEmpty ? '53317' : _portCtrl.text.trim(),
         password: _passwordCtrl.text,
       ));
-      final app = context.read<AppService>();
-      final relay = context.read<RemoteDesktopRelayService>();
-      final params = RemoteDesktopConnectParams(
-        host: 'WAN ${_formatConnectionCode(normalizedCode.padLeft(9, '0'))}',
-        port: 0,
-        myDeviceId: app.deviceId,
-        myAlias: app.deviceAlias,
-        password: _passwordCtrl.text.isEmpty ? null : _passwordCtrl.text,
-        wantControl: _wantControl,
-        wantAudio: _wantAudio,
-        relayUrl: relay.relayUrl,
-        relayTargetId: normalizedCode,
-      );
-      Navigator.of(context).push(MaterialPageRoute(
-        builder: (_) => RemoteDesktopViewerPage(params: params),
-      ));
+      unawaited(_connectViaWanCode(normalizedCode));
       return;
     }
 

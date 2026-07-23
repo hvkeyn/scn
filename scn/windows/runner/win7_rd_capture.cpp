@@ -261,6 +261,37 @@ bool CaptureScreenJpeg(int quality, int max_width, int monitor_index,
     ok = StretchBlt(mem_dc, 0, 0, dst_w, dst_h, screen_dc, src_x, src_y, src_w,
                     src_h, SRCCOPY | CAPTUREBLT);
   }
+
+  // Paint the real OS cursor into the frame so the viewer can hide the local
+  // crosshair and still see resize/arrow/I-beam cursors (AnyDesk-like).
+  if (ok) {
+    CURSORINFO ci;
+    ZeroMemory(&ci, sizeof(ci));
+    ci.cbSize = sizeof(ci);
+    if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && ci.hCursor) {
+      const int cursor_x = static_cast<int>(
+          (ci.ptScreenPos.x - src_x) * (static_cast<double>(dst_w) / src_w));
+      const int cursor_y = static_cast<int>(
+          (ci.ptScreenPos.y - src_y) * (static_cast<double>(dst_h) / src_h));
+      ICONINFO ii;
+      ZeroMemory(&ii, sizeof(ii));
+      int hot_x = 0;
+      int hot_y = 0;
+      if (GetIconInfo(ci.hCursor, &ii)) {
+        hot_x = static_cast<int>(ii.xHotspot);
+        hot_y = static_cast<int>(ii.yHotspot);
+        if (ii.hbmMask) {
+          DeleteObject(ii.hbmMask);
+        }
+        if (ii.hbmColor) {
+          DeleteObject(ii.hbmColor);
+        }
+      }
+      DrawIconEx(mem_dc, cursor_x - hot_x, cursor_y - hot_y, ci.hCursor, 0, 0,
+                 0, nullptr, DI_NORMAL | DI_DEFAULTSIZE);
+    }
+  }
+
   SelectObject(mem_dc, old);
 
   bool encoded = false;

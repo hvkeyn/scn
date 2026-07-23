@@ -92,7 +92,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   win7_env::Apply();
   win7_mesh_signal::ClearSignalFile();
   win7_crash_log::Install();
-  win7_crash_log::Write(L"SCN_WIN7_RUNTIME=225-rd-input");
+  win7_crash_log::Write(L"SCN_WIN7_RUNTIME=226-scale-keys");
   win7_crash_log::Write(L"wWinMain start");
   LogExecutableInfo();
   ShowBuildBannerIfWin7();
